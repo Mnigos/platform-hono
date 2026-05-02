@@ -36,7 +36,10 @@ import {
 } from './helpers/response'
 import type { HonoAdapterOptions } from './options'
 
-type RouteHandler = (req: Request, res: Context) => void | Promise<void>
+type RouteHandler = (
+	req: Request,
+	res: Context
+) => Response | undefined | Promise<Response | undefined>
 
 export class HonoAdapter extends AbstractHttpAdapter<
 	HttpServer | HttpsServer,
@@ -81,7 +84,10 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			const clientIp = extractClientIp(ctx, this.adapterOptions)
 			if (!req.ip && clientIp) req.ip = clientIp
 			const response = await routeHandler(ctx.req, ctx, next)
-			return getFinalizedResponse(ctx, response)
+			return getFinalizedResponse(
+				ctx,
+				response instanceof Response ? response : undefined
+			)
 		}
 	}
 
@@ -175,21 +181,15 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		this.registerRoute('options', pathOrHandler, handler)
 	}
 
-	async reply(ctx: Context, body: unknown, statusCode?: number) {
-		const normalizedCtx = await normalizeContext(ctx)
-
-		if (statusCode)
-			normalizedCtx.status(statusCode as Parameters<Context['status']>[0])
+	reply(ctx: Context, body: unknown, statusCode?: number) {
+		if (statusCode) ctx.status(statusCode as Parameters<Context['status']>[0])
 
 		if (body instanceof Response) {
-			await getFinalizedResponse(normalizedCtx, body)
+			getFinalizedResponse(ctx, body)
 			return
 		}
 
-		const responseContentType = await this.getHeader(
-			normalizedCtx,
-			'Content-Type'
-		)
+		const responseContentType = this.getHeader(ctx, 'Content-Type')
 		const bodyRecord = body as Record<string, unknown> | undefined
 
 		if (
@@ -200,15 +200,14 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			this.logger.warn(
 				"Content-Type doesn't match Reply body, you might need a custom ExceptionFilter for non-JSON responses"
 			)
-			this.setHeader(normalizedCtx, 'Content-Type', 'application/json')
+			this.setHeader(ctx, 'Content-Type', 'application/json')
 		}
 
-		await getFinalizedResponse(normalizedCtx, body)
+		getFinalizedResponse(ctx, body)
 	}
 
-	async status(ctx: Context, statusCode: number) {
-		const normalizedCtx = await normalizeContext(ctx)
-		normalizedCtx.status(statusCode as Parameters<Context['status']>[0])
+	status(ctx: Context, statusCode: number) {
+		ctx.status(statusCode as Parameters<Context['status']>[0])
 	}
 
 	end() {
@@ -258,29 +257,24 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		throw new Error('Method not implemented.')
 	}
 
-	async isHeadersSent(ctx: Context) {
-		const normalizedCtx = await normalizeContext(ctx)
-		return normalizedCtx.finalized
+	isHeadersSent(ctx: Context) {
+		return ctx.finalized
 	}
 
-	async getHeader(ctx: Context, name: string) {
-		const normalizedCtx = await normalizeContext(ctx)
-		return normalizedCtx.res.headers.get(name)
+	getHeader(ctx: Context, name: string) {
+		return ctx.res.headers.get(name)
 	}
 
-	async setHeader(ctx: Context, name: string, value: string) {
-		const normalizedCtx = await normalizeContext(ctx)
-		normalizedCtx.res.headers.set(name, value)
+	setHeader(ctx: Context, name: string, value: string) {
+		ctx.res.headers.set(name, value)
 	}
 
-	async appendHeader(ctx: Context, name: string, value: string) {
-		const normalizedCtx = await normalizeContext(ctx)
-		normalizedCtx.res.headers.append(name, value)
+	appendHeader(ctx: Context, name: string, value: string) {
+		ctx.res.headers.append(name, value)
 	}
 
-	async getRequestHostname(ctx: Context) {
-		const normalizedCtx = await normalizeContext(ctx)
-		return normalizedCtx.req.header().host
+	getRequestHostname(ctx: Context) {
+		return ctx.req.header().host
 	}
 
 	getRequestMethod(request: Context['req']) {

@@ -21,73 +21,81 @@ async function getContext() {
 	return capturedContext
 }
 
-test('normalizes direct and lazy contexts', async () => {
-	const ctx = await getContext()
+describe('response helpers', () => {
+	test('normalizes direct and lazy contexts', async () => {
+		const ctx = await getContext()
 
-	expect(await normalizeContext(ctx)).toBe(ctx)
-	expect(await normalizeContext(async () => ctx)).toBe(ctx)
-})
-
-test('creates JSON responses for object bodies', async () => {
-	const ctx = await getContext()
-
-	const response = await createResponse(ctx, { ok: true })
-
-	expect(response.headers.get('content-type')).toContain('application/json')
-	await expect(response.json()).resolves.toEqual({ ok: true })
-})
-
-test('creates binary responses for buffer bodies', async () => {
-	const ctx = await getContext()
-
-	const response = await createResponse(ctx, Buffer.from('abc'))
-
-	expect(response.headers.get('content-type')).toBe('application/octet-stream')
-	await expect(response.text()).resolves.toBe('abc')
-})
-
-test('preserves prebuilt responses', async () => {
-	const ctx = await getContext()
-	const response = new Response('created', {
-		headers: { 'x-result': 'ok' },
-		status: 201,
+		expect(await normalizeContext(ctx)).toBe(ctx)
+		expect(await normalizeContext(async () => ctx)).toBe(ctx)
 	})
 
-	expect(await createResponse(ctx, response)).toBe(response)
-})
+	test('creates JSON responses for object bodies', async () => {
+		const ctx = await getContext()
 
-test('preserves existing non-empty context response for empty bodies', async () => {
-	const ctx = await getContext()
-	ctx.res = new Response('already done', { status: 202 })
+		const response = await createResponse(ctx, { ok: true })
 
-	const response = await createResponse(ctx)
+		expect(response.headers.get('content-type')).toContain('application/json')
+		await expect(response.json()).resolves.toEqual({ ok: true })
+	})
 
-	expect(response.status).toBe(202)
-	await expect(response.text()).resolves.toBe('already done')
-})
+	test('creates binary responses for buffer bodies', async () => {
+		const ctx = await getContext()
 
-test('creates empty responses for undefined bodies', async () => {
-	const ctx = await getContext()
+		const response = await createResponse(ctx, Buffer.from('abc'))
 
-	const response = await createResponse(ctx)
+		expect(response.headers.get('content-type')).toBe(
+			'application/octet-stream'
+		)
+		await expect(response.text()).resolves.toBe('abc')
+	})
 
-	expect(response.body).toBeNull()
-})
+	test('preserves prebuilt responses', async () => {
+		const ctx = await getContext()
+		const response = new Response('created', {
+			headers: { 'x-result': 'ok' },
+			status: 201,
+		})
 
-test('finalizes responses idempotently', async () => {
-	const ctx = await getContext()
-	const response = new Response('ok')
+		expect(await createResponse(ctx, response)).toBe(response)
+	})
 
-	expect(finalizeResponse(ctx, response)).toBe(response)
-	expect(finalizeResponse(ctx, response)).toBe(response)
-	expect(ctx.res).toBe(response)
-})
+	test('preserves existing non-empty context response for empty bodies', async () => {
+		const ctx = await getContext()
+		ctx.res = new Response('already done', { status: 202 })
 
-test('builds and finalizes responses in one step', async () => {
-	const ctx = await getContext()
+		const response = await createResponse(ctx)
 
-	const response = await getFinalizedResponse(ctx, 'hello')
+		expect(response.status).toBe(202)
+		await expect(response.text()).resolves.toBe('already done')
+	})
 
-	expect(ctx.res.status).toBe(response.status)
-	await expect(response.text()).resolves.toBe('hello')
+	test('creates empty responses for undefined bodies', async () => {
+		const ctx = await getContext()
+
+		const response = await createResponse(ctx)
+
+		expect(response.body).toBeNull()
+	})
+
+	test('finalizes responses idempotently', async () => {
+		const ctx = await getContext()
+		const response = new Response('ok', {
+			headers: { 'x-finalized': 'yes' },
+			status: 201,
+		})
+
+		expect(finalizeResponse(ctx, response)).toBe(response)
+		expect(finalizeResponse(ctx, response)).toBe(response)
+		expect(ctx.res.status).toBe(201)
+		expect(ctx.res.headers.get('x-finalized')).toBe('yes')
+	})
+
+	test('builds and finalizes responses in one step', async () => {
+		const ctx = await getContext()
+
+		const response = await getFinalizedResponse(ctx, 'hello')
+
+		expect(ctx.res.status).toBe(response.status)
+		await expect(response.text()).resolves.toBe('hello')
+	})
 })

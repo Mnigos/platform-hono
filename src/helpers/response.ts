@@ -1,5 +1,7 @@
 import type { Context } from 'hono'
 
+const finalizedResponses = new WeakMap<Context, Response>()
+
 export async function normalizeContext(
 	ctx: Context | (() => Promise<Context>)
 ) {
@@ -12,8 +14,9 @@ export async function normalizeContext(
  * middleware pipeline.
  */
 export function finalizeResponse(ctx: Context, response: Response) {
-	if (ctx.finalized && ctx.res === response) return response
-	ctx.res = response
+	if (ctx.finalized && finalizedResponses.get(ctx) === response) return response
+	finalizedResponses.set(ctx, response)
+	ctx.res = response.clone() as Response
 	return response
 }
 
@@ -21,20 +24,18 @@ export function finalizeResponse(ctx: Context, response: Response) {
  * Converts Nest reply bodies into Hono responses while preserving already-built
  * responses and inferring JSON/binary content types when Nest has not set one.
  */
-export async function createResponse(ctx: Context, body?: unknown) {
-	const normalizedCtx = await normalizeContext(ctx)
-
+export function createResponse(ctx: Context, body?: unknown) {
 	if (body instanceof Response) return body
 
-	if (
-		body === undefined &&
-		normalizedCtx.res &&
-		(normalizedCtx.finalized || normalizedCtx.res.body !== null)
-	) {
-		return normalizedCtx.res
+	if (body === undefined && finalizedResponses.has(ctx)) {
+		return finalizedResponses.get(ctx) as Response
 	}
 
-	let responseContentType = normalizedCtx.res.headers.get('Content-Type')
+	if (body === undefined && ctx.res && ctx.res.body !== null) {
+		return ctx.res
+	}
+
+	let responseContentType = ctx.res.headers.get('Content-Type')
 
 	if (!responseContentType || responseContentType.startsWith('text/plain')) {
 		if (body instanceof Buffer) {
@@ -43,24 +44,23 @@ export async function createResponse(ctx: Context, body?: unknown) {
 			responseContentType = 'application/json'
 		}
 		if (responseContentType)
-			normalizedCtx.res.headers.set('Content-Type', responseContentType)
+			ctx.res.headers.set('Content-Type', responseContentType)
 	}
 
-	if (responseContentType === 'application/json' && typeof body === 'object') {
-		return normalizedCtx.json(body as object)
+	if (
+		responseContentType?.startsWith('application/json') &&
+		typeof body === 'object'
+	) {
+		return ctx.newResponse(JSON.stringify(body))
 	}
-	if (body === undefined) return normalizedCtx.newResponse(null)
-	return normalizedCtx.body(body as string)
+	if (body === undefined) return ctx.newResponse(null)
+	return ctx.body(body as string)
 }
 
 /**
  * Builds and stores the final Hono response in one step for handlers that need
  * to return the response immediately.
  */
-export async function getFinalizedResponse(ctx: Context, body?: unknown) {
-	const normalizedCtx = await normalizeContext(ctx)
-	return finalizeResponse(
-		normalizedCtx,
-		await createResponse(normalizedCtx, body)
-	)
+export function getFinalizedResponse(ctx: Context, body?: unknown) {
+	return finalizeResponse(ctx, createResponse(ctx, body))
 }

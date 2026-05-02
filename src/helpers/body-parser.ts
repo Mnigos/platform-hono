@@ -22,6 +22,7 @@ export async function parseRequestBodyWithLimits(
 	const effectiveBodyLimit = getEffectiveBodyLimit(options, requestSizeLimit)
 
 	if (requestSizeLimit) enforceContentLengthLimit(ctx, requestSizeLimit)
+	if (!isParsableContentType(contentType)) return
 	if (effectiveBodyLimit)
 		await enforceBodyLimit(
 			ctx,
@@ -38,6 +39,15 @@ export async function parseRequestBodyWithLimits(
 				requestSizeLimit.errorMessage ?? 'Payload too large'
 			)
 	}
+}
+
+function isParsableContentType(contentType: string | undefined) {
+	return (
+		contentType?.startsWith('multipart/form-data') ||
+		contentType?.startsWith('application/x-www-form-urlencoded') ||
+		contentType?.startsWith('application/json') ||
+		contentType?.startsWith('text/plain')
+	)
 }
 
 /**
