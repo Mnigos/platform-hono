@@ -29,6 +29,7 @@ import {
 } from './helpers/body-parser'
 import { extractClientIp } from './helpers/client-ip'
 import { getRequestSizeLimit, isPathMatch } from './helpers/path-matching'
+import { getNestHonoRequest } from './helpers/request'
 import {
 	finalizeResponse,
 	getFinalizedResponse,
@@ -37,7 +38,7 @@ import {
 import type { HonoAdapterOptions } from './options'
 
 type RouteHandler = (
-	req: Request,
+	req: Context['req'],
 	res: Context
 ) => Response | undefined | Promise<Response | undefined>
 
@@ -76,7 +77,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	private createRouteHandler(routeHandler: RequestHandler): MiddlewareHandler {
 		return async (ctx, next) => {
-			const req = ctx.req as unknown as Record<string, unknown>
+			const req = getNestHonoRequest(ctx.req)
 			req.params = ctx.req.param()
 			if (typeof req.query === 'function') req.query = req.query()
 			if (!req.query) req.query = ctx.req.query()
@@ -302,7 +303,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	private normalizeRequestMetadata(ctx: Context) {
-		const req = ctx.req as unknown as Record<string, unknown>
+		const req = getNestHonoRequest(ctx.req)
 		const clientIp = extractClientIp(ctx, this.adapterOptions)
 		if (clientIp) req.ip = clientIp
 		req.headers = Object.fromEntries(ctx.req.raw.headers)

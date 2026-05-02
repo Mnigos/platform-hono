@@ -1,6 +1,7 @@
 import type { Server } from 'node:http'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Logger, RequestMethod } from '@nestjs/common'
+import { getNestHonoRequest, type NestHonoRequest } from './helpers/request'
 import { HonoAdapter } from './hono-adapter'
 
 vi.mock('@hono/node-server/serve-static', () => ({
@@ -24,10 +25,10 @@ async function requestWithCapturedBody(
 	path: string,
 	init?: RequestInit
 ) {
-	let capturedRequest: Record<string, unknown> | undefined
+	let capturedRequest: NestHonoRequest | undefined
 
 	adapter.post(path, req => {
-		capturedRequest = req as unknown as Record<string, unknown>
+		capturedRequest = getNestHonoRequest(req)
 	})
 
 	await adapter.hono.request(path, { method: 'POST', ...init })
@@ -137,10 +138,10 @@ describe('HonoAdapter', () => {
 
 	test('normalizes request metadata for route handlers', async () => {
 		const adapter = new HonoAdapter({ trustProxy: true })
-		let capturedRequest: Record<string, unknown> | undefined
+		let capturedRequest: NestHonoRequest | undefined
 
 		adapter.get('/users/:id', req => {
-			capturedRequest = req as unknown as Record<string, unknown>
+			capturedRequest = getNestHonoRequest(req)
 		})
 
 		await adapter.hono.request('/users/123?tab=profile', {
@@ -160,10 +161,10 @@ describe('HonoAdapter', () => {
 
 	test('normalizes request metadata in initialized middleware', async () => {
 		const adapter = createInitializedAdapter({ trustProxy: true })
-		let capturedRequest: Record<string, unknown> | undefined
+		let capturedRequest: NestHonoRequest | undefined
 
 		adapter.get('/meta', req => {
-			capturedRequest = req as unknown as Record<string, unknown>
+			capturedRequest = getNestHonoRequest(req)
 		})
 
 		await adapter.hono.request('/meta?ok=true', {
@@ -182,10 +183,10 @@ describe('HonoAdapter', () => {
 
 	test('does not trust forwarded IP headers by default', async () => {
 		const adapter = createInitializedAdapter()
-		let capturedRequest: Record<string, unknown> | undefined
+		let capturedRequest: NestHonoRequest | undefined
 
 		adapter.get('/meta', req => {
-			capturedRequest = req as unknown as Record<string, unknown>
+			capturedRequest = getNestHonoRequest(req)
 		})
 
 		await adapter.hono.request('/meta', {
@@ -197,14 +198,14 @@ describe('HonoAdapter', () => {
 
 	test('preserves request IP values that were already set upstream', async () => {
 		const adapter = new HonoAdapter({ trustProxy: true })
-		let capturedRequest: Record<string, unknown> | undefined
+		let capturedRequest: NestHonoRequest | undefined
 
 		adapter.hono.use('/meta', async (ctx, next) => {
-			;(ctx.req as unknown as Record<string, unknown>).ip = '192.0.2.10'
+			getNestHonoRequest(ctx.req).ip = '192.0.2.10'
 			await next()
 		})
 		adapter.get('/meta', req => {
-			capturedRequest = req as unknown as Record<string, unknown>
+			capturedRequest = getNestHonoRequest(req)
 		})
 
 		await adapter.hono.request('/meta', {

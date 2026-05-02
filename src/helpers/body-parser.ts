@@ -6,6 +6,7 @@ import {
 	type HonoAdapterOptions,
 	type RequestSizeLimit,
 } from '../options'
+import { getNestHonoRequest } from './request'
 
 /**
  * Applies the effective body limit before parsing and keeps route-specific
@@ -17,7 +18,7 @@ export async function parseRequestBodyWithLimits(
 	rawBody: boolean,
 	requestSizeLimit?: RequestSizeLimit
 ) {
-	const req = ctx.req as unknown as Record<string, unknown>
+	const req = getNestHonoRequest(ctx.req)
 	const contentType = ctx.req.header('content-type')
 	const effectiveBodyLimit = getEffectiveBodyLimit(options, requestSizeLimit)
 
@@ -70,7 +71,7 @@ async function parseRequestBody(
 	contentType: string | undefined,
 	rawBody: boolean
 ) {
-	const req = ctx.req as unknown as Record<string, unknown>
+	const req = getNestHonoRequest(ctx.req)
 
 	if (
 		contentType?.startsWith('multipart/form-data') ||
