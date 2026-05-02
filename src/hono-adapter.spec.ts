@@ -8,6 +8,10 @@ vi.mock('@hono/node-server/serve-static', () => ({
 	serveStatic: vi.fn(() => async () => new Response('static')),
 }))
 
+beforeEach(() => {
+	vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined)
+})
+
 afterEach(() => {
 	vi.restoreAllMocks()
 })
@@ -550,11 +554,18 @@ describe('HonoAdapter', () => {
 				callback?.()
 				return httpServer
 			})
+		const closeIdleConnectionsSpy = vi.spyOn(
+			httpServer,
+			'closeIdleConnections'
+		)
+		const closeAllConnectionsSpy = vi.spyOn(httpServer, 'closeAllConnections')
 
 		expect(httpAdapter.listen(0)).toBe(httpServer)
 		await expect(httpAdapter.close()).resolves.toBeUndefined()
 		expect(listenSpy).toHaveBeenCalledWith(0)
 		expect(closeSpy).toHaveBeenCalledOnce()
+		expect(closeIdleConnectionsSpy).toHaveBeenCalledOnce()
+		expect(closeAllConnectionsSpy).toHaveBeenCalledOnce()
 
 		const httpsAdapter = new HonoAdapter()
 		httpsAdapter.initHttpServer({

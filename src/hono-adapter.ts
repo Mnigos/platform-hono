@@ -299,7 +299,11 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	close(): Promise<void> {
-		return new Promise(resolve => this.httpServer.close(() => resolve()))
+		return new Promise(resolve => {
+			this.httpServer.close(() => resolve())
+			this.httpServer.closeIdleConnections?.()
+			this.httpServer.closeAllConnections?.()
+		})
 	}
 
 	private normalizeRequestMetadata(ctx: Context) {
