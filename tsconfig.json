@@ -33,6 +33,6 @@
     "tsBuildInfoFile": "./.cache/tsbuildinfo.json",
     "types": ["bun", "vitest/globals"]
   },
-  "include": ["src/**/*.ts", "scripts/**/*.ts", "tests/**/*.ts", "vitest*.config.ts"],
+  "include": ["src/**/*.ts", "tests/**/*.ts", "vitest*.config.ts"],
   "exclude": ["node_modules", "dist"]
 }

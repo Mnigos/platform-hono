@@ -554,10 +554,7 @@ describe('HonoAdapter', () => {
 				callback?.()
 				return httpServer
 			})
-		const closeIdleConnectionsSpy = vi.spyOn(
-			httpServer,
-			'closeIdleConnections'
-		)
+		const closeIdleConnectionsSpy = vi.spyOn(httpServer, 'closeIdleConnections')
 		const closeAllConnectionsSpy = vi.spyOn(httpServer, 'closeAllConnections')
 
 		expect(httpAdapter.listen(0)).toBe(httpServer)
