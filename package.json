@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "type": "module",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+ssh://git@github.com/Mnigos/platform-hono.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Mnigos/platform-hono/issues"
+  },
+  "homepage": "https://github.com/Mnigos/platform-hono#readme",
   "packageManager": "bun@1.3.13",
   "engines": {
     "bun": ">=1.3.3"
