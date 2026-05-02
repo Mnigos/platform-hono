@@ -12,7 +12,6 @@ import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response'
 import {
 	HttpStatus,
 	Logger,
-	PayloadTooLargeException,
 	RequestMethod,
 	type VersioningOptions,
 } from '@nestjs/common'
@@ -23,19 +22,21 @@ import type {
 } from '@nestjs/common/interfaces'
 import { AbstractHttpAdapter } from '@nestjs/core/adapters/http-adapter'
 import { type Context, Hono, type MiddlewareHandler } from 'hono'
-import { bodyLimit } from 'hono/body-limit'
 import { cors } from 'hono/cors'
+import {
+	createBodyLimit,
+	parseRequestBodyWithLimits,
+} from './helpers/body-parser'
+import { extractClientIp } from './helpers/client-ip'
+import { getRequestSizeLimit, isPathMatch } from './helpers/path-matching'
+import {
+	finalizeResponse,
+	getFinalizedResponse,
+	normalizeContext,
+} from './helpers/response'
+import type { HonoAdapterOptions } from './options'
 
 type RouteHandler = (req: Request, res: Context) => void | Promise<void>
-
-export interface HonoAdapterOptions {
-	requestSizeLimits?: {
-		path: string
-		maxBytes: number
-		errorMessage?: string
-	}[]
-	skipBodyParserFor?: string[]
-}
 
 export class HonoAdapter extends AbstractHttpAdapter<
 	HttpServer | HttpsServer,
@@ -77,51 +78,11 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			if (typeof req.query === 'function') req.query = req.query()
 			if (!req.query) req.query = ctx.req.query()
 			if (!req.headers) req.headers = Object.fromEntries(ctx.req.raw.headers)
-			if (!req.ip) req.ip = this.extractClientIp(ctx)
+			const clientIp = extractClientIp(ctx, this.adapterOptions)
+			if (!req.ip && clientIp) req.ip = clientIp
 			await routeHandler(ctx.req, ctx, next)
-			return this.getBody(ctx)
+			return getFinalizedResponse(ctx)
 		}
-	}
-
-	private async normalizeContext(ctx: Context | (() => Promise<Context>)) {
-		if (typeof ctx === 'function') return await ctx()
-		return ctx
-	}
-
-	private async getBody(ctx: Context, body?: unknown) {
-		const normalizedCtx = await this.normalizeContext(ctx)
-
-		if (
-			body === undefined &&
-			normalizedCtx.res &&
-			normalizedCtx.res.body !== null
-		) {
-			return normalizedCtx.res
-		}
-
-		let responseContentType = await this.getHeader(
-			normalizedCtx,
-			'Content-Type'
-		)
-
-		if (!responseContentType || responseContentType.startsWith('text/plain')) {
-			if (body instanceof Buffer) {
-				responseContentType = 'application/octet-stream'
-			} else if (typeof body === 'object') {
-				responseContentType = 'application/json'
-			}
-			if (responseContentType)
-				this.setHeader(normalizedCtx, 'Content-Type', responseContentType)
-		}
-
-		if (
-			responseContentType === 'application/json' &&
-			typeof body === 'object'
-		) {
-			return normalizedCtx.json(body as object)
-		}
-		if (body === undefined) return normalizedCtx.newResponse(null)
-		return normalizedCtx.body(body as string)
 	}
 
 	private registerRoute(
@@ -214,10 +175,15 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	async reply(ctx: Context, body: unknown, statusCode?: number) {
-		const normalizedCtx = await this.normalizeContext(ctx)
+		const normalizedCtx = await normalizeContext(ctx)
 
 		if (statusCode)
 			normalizedCtx.status(statusCode as Parameters<Context['status']>[0])
+
+		if (body instanceof Response) {
+			await getFinalizedResponse(normalizedCtx, body)
+			return
+		}
 
 		const responseContentType = await this.getHeader(
 			normalizedCtx,
@@ -236,11 +202,11 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			this.setHeader(normalizedCtx, 'Content-Type', 'application/json')
 		}
 
-		normalizedCtx.res = await this.getBody(normalizedCtx, body)
+		await getFinalizedResponse(normalizedCtx, body)
 	}
 
 	async status(ctx: Context, statusCode: number) {
-		const normalizedCtx = await this.normalizeContext(ctx)
+		const normalizedCtx = await normalizeContext(ctx)
 		normalizedCtx.status(statusCode as Parameters<Context['status']>[0])
 	}
 
@@ -253,10 +219,13 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	async redirect(ctx: Context, statusCode: number, url: string) {
-		const normalizedCtx = await this.normalizeContext(ctx)
-		normalizedCtx.res = normalizedCtx.redirect(
-			url,
-			statusCode as Parameters<Context['redirect']>[1]
+		const normalizedCtx = await normalizeContext(ctx)
+		finalizeResponse(
+			normalizedCtx,
+			normalizedCtx.redirect(
+				url,
+				statusCode as Parameters<Context['redirect']>[1]
+			)
 		)
 	}
 
@@ -265,7 +234,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	) {
 		this.hono.onError(async (err, ctx) => {
 			await handler(err, ctx.req as unknown as Request, ctx)
-			return this.getBody(ctx)
+			return getFinalizedResponse(ctx)
 		})
 	}
 
@@ -275,7 +244,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		this.hono.notFound(async ctx => {
 			await handler(ctx.req as unknown as Request, ctx)
 			await this.status(ctx, HttpStatus.NOT_FOUND)
-			return this.getBody(ctx, 'Not Found')
+			return getFinalizedResponse(ctx, 'Not Found')
 		})
 	}
 
@@ -289,27 +258,27 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	async isHeadersSent(ctx: Context) {
-		const normalizedCtx = await this.normalizeContext(ctx)
+		const normalizedCtx = await normalizeContext(ctx)
 		return normalizedCtx.finalized
 	}
 
 	async getHeader(ctx: Context, name: string) {
-		const normalizedCtx = await this.normalizeContext(ctx)
+		const normalizedCtx = await normalizeContext(ctx)
 		return normalizedCtx.res.headers.get(name)
 	}
 
 	async setHeader(ctx: Context, name: string, value: string) {
-		const normalizedCtx = await this.normalizeContext(ctx)
+		const normalizedCtx = await normalizeContext(ctx)
 		normalizedCtx.res.headers.set(name, value)
 	}
 
 	async appendHeader(ctx: Context, name: string, value: string) {
-		const normalizedCtx = await this.normalizeContext(ctx)
+		const normalizedCtx = await normalizeContext(ctx)
 		normalizedCtx.res.headers.append(name, value)
 	}
 
 	async getRequestHostname(ctx: Context) {
-		const normalizedCtx = await this.normalizeContext(ctx)
+		const normalizedCtx = await normalizeContext(ctx)
 		return normalizedCtx.req.header().host
 	}
 
@@ -329,7 +298,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		this.logger.log(
 			`Registering body parser middleware for type: ${type}${limit ? ` | bodyLimit: ${limit}` : ''}`
 		)
-		if (limit) this.hono.use(this.createBodyLimit(limit))
+		if (limit) this.hono.use(createBodyLimit(limit))
 		this._isParserRegistered = true
 	}
 
@@ -337,122 +306,36 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		return new Promise(resolve => this.httpServer.close(() => resolve()))
 	}
 
-	private extractClientIp(ctx: Context) {
-		return (
-			ctx.req.header('cf-connecting-ip') ??
-			ctx.req.header('x-forwarded-for') ??
-			ctx.req.header('x-real-ip') ??
-			ctx.req.header('forwarded') ??
-			ctx.req.header('true-client-ip') ??
-			ctx.req.header('x-client-ip') ??
-			ctx.req.header('x-cluster-client-ip') ??
-			ctx.req.header('x-forwarded') ??
-			ctx.req.header('forwarded-for') ??
-			ctx.req.header('via')
-		)
-	}
-
-	private async parseRequestBody(
-		ctx: Context,
-		contentType: string | undefined,
-		rawBody: boolean,
-		requestSizeLimit?: { maxBytes: number; errorMessage?: string }
-	) {
+	private normalizeRequestMetadata(ctx: Context) {
 		const req = ctx.req as unknown as Record<string, unknown>
+		const clientIp = extractClientIp(ctx, this.adapterOptions)
+		if (clientIp) req.ip = clientIp
+		req.headers = Object.fromEntries(ctx.req.raw.headers)
 
-		if (
-			contentType?.startsWith('multipart/form-data') ||
-			contentType?.startsWith('application/x-www-form-urlencoded')
-		) {
-			req.body = await ctx.req.parseBody({ all: true }).catch(() => {
-				if (requestSizeLimit)
-					throw new PayloadTooLargeException(
-						requestSizeLimit.errorMessage ?? 'Payload too large'
-					)
-				return {}
-			})
-		} else if (
-			contentType?.startsWith('application/json') ||
-			contentType?.startsWith('text/plain')
-		) {
-			if (rawBody) req.rawBody = Buffer.from(await ctx.req.text())
-			req.body = await ctx.req.json().catch(() => {
-				if (requestSizeLimit)
-					throw new PayloadTooLargeException(
-						requestSizeLimit.errorMessage ?? 'Payload too large'
-					)
-				return {}
-			})
-		}
-	}
+		const pathname = new URL(ctx.req.url).pathname
+		req.baseUrl = pathname
 
-	private getRequestSizeLimit(pathname: string) {
-		const requestSizeLimits = this.adapterOptions.requestSizeLimits ?? []
-
-		return requestSizeLimits.find(requestSizeLimit =>
-			pathname.startsWith(requestSizeLimit.path)
-		)
-	}
-
-	private getParsedBodySize(value: unknown): number {
-		if (typeof value === 'string') return new TextEncoder().encode(value).length
-		if (value instanceof Blob) return value.size
-		if (Array.isArray(value))
-			return value.reduce(
-				(totalSize, itemValue) => totalSize + this.getParsedBodySize(itemValue),
-				0
-			)
-		if (value && typeof value === 'object')
-			return Object.values(value).reduce(
-				(totalSize, itemValue) => totalSize + this.getParsedBodySize(itemValue),
-				0
-			)
-		return 0
+		return pathname
 	}
 
 	initHttpServer(options: NestApplicationOptions) {
 		const skipPaths = this.adapterOptions.skipBodyParserFor ?? []
 
 		this.hono.use(async (ctx, next) => {
-			const req = ctx.req as unknown as Record<string, unknown>
-			req.ip = this.extractClientIp(ctx)
-			req.headers = Object.fromEntries(ctx.req.raw.headers)
-
-			const url = new URL(ctx.req.url)
-			const pathname = url.pathname
-			req.baseUrl = pathname
-			const shouldSkip = skipPaths.some(p => pathname.startsWith(p))
-			const requestSizeLimit = this.getRequestSizeLimit(pathname)
-			const contentLengthHeader = ctx.req.header('content-length')
-
-			if (requestSizeLimit && contentLengthHeader) {
-				const contentLength = Number.parseInt(contentLengthHeader, 10)
-
-				if (
-					Number.isFinite(contentLength) &&
-					contentLength > requestSizeLimit.maxBytes
-				)
-					throw new PayloadTooLargeException(
-						requestSizeLimit.errorMessage ?? 'Payload too large'
-					)
-			}
+			const pathname = this.normalizeRequestMetadata(ctx)
+			const shouldSkip = skipPaths.some(path => isPathMatch(pathname, path))
+			const requestSizeLimit = getRequestSizeLimit(
+				pathname,
+				this.adapterOptions.requestSizeLimits
+			)
 
 			if (options.bodyParser !== false && !shouldSkip) {
-				const contentType = ctx.req.header('content-type')
-				await this.parseRequestBody(
+				await parseRequestBodyWithLimits(
 					ctx,
-					contentType,
+					this.adapterOptions,
 					options.rawBody ?? false,
 					requestSizeLimit
 				)
-
-				if (requestSizeLimit) {
-					const parsedBodySize = this.getParsedBodySize(req.body)
-					if (parsedBodySize > requestSizeLimit.maxBytes)
-						throw new PayloadTooLargeException(
-							requestSizeLimit.errorMessage ?? 'Payload too large'
-						)
-				}
 			}
 
 			await next()
@@ -520,15 +403,5 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	override listen(port: number, ...args: unknown[]): HttpServer | HttpsServer {
 		return this.httpServer.listen(port, ...(args as []))
-	}
-
-	private createBodyLimit(maxSize: number) {
-		return bodyLimit({
-			maxSize,
-			onError: ctx => {
-				const errorMessage = `Body size exceeded: ${maxSize} bytes. Size: ${ctx.req.header('Content-Length')} bytes. Method: ${ctx.req.method}. Path: ${ctx.req.path}`
-				throw new Error(errorMessage)
-			},
-		})
 	}
 }
