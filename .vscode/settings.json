@@ -1,0 +1,30 @@
+{
+  "editor.tabSize": 2,
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "biomejs.biome",
+  "explorer.fileNesting.enabled": true,
+  "explorer.fileNesting.patterns": {
+    "*.ts": "$(capture).js, $(capture).*.ts, $(capture).*.js",
+    "*.js": "$(capture).js.map, $(capture).*.ts, $(capture).*.js",
+    "tsconfig.json": "tsconfig.*.json",
+    "Dockerfile": "docker-compose.yml, .dockerignore",
+    ".env": "*.env",
+    "package.json": "bun.lock, .nvmrc, .npmrc",
+    ".gitignore": ".gitattributes",
+    "vitest.config.ts": "vitest.d.ts"
+  },
+  "javascript.updateImportsOnFileMove.enabled": "always",
+  "typescript.updateImportsOnFileMove.enabled": "always",
+  "typescript.tsdk": "node_modules/typescript/lib",
+  "typescript.enablePromptUseWorkspaceTsdk": true,
+  "workbench.editor.tabSizing": "shrink",
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "never",
+    "source.fixAll.prettier": "never",
+    "source.fixAll.markdownlint": "explicit",
+    "source.fixAll.biome": "explicit",
+    "source.organizeImports.biome": "explicit"
+  },
+  "material-icon-theme.activeIconPack": "nest",
+  "files.eol": "\n"
+}
