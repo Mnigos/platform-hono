@@ -1,5 +1,11 @@
 # @mnigos/platform-hono
 
+## 0.1.1
+
+### Patch Changes
+
+- Loosen peer dependency ranges to support compatible Hono and NestJS versions.
+
 ## 0.1.0
 
 ### Minor Changes

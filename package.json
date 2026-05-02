@@ -1,6 +1,6 @@
 {
   "name": "@mnigos/platform-hono",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -32,7 +32,8 @@
     "check": "ultracite check",
     "check:fix": "ultracite fix --unsafe",
     "clean": "git clean -xdf .cache .turbo coverage dist node_modules",
-    "prepublish:check": "bun changeset version && bun run check && bun run typecheck && bun run test && bun run test:integration && bun run build && bun run test:exports && npm pack --dry-run",
+    "prepublish:version": "changeset version",
+    "prepublish:check": "bun run check && bun run typecheck && bun run test && bun run test:integration && bun run build && bun run test:exports && npm pack --dry-run",
     "publish:public": "npm publish --access public",
     "release": "bun run prepublish:check && changeset publish",
     "test": "vitest run --passWithNoTests",
@@ -42,10 +43,10 @@
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {
-    "@hono/node-server": "^2.0.1",
-    "@nestjs/common": "^11.1.19",
-    "@nestjs/core": "^11.1.19",
-    "hono": "^4.12.16"
+    "@hono/node-server": ">=2.0.0",
+    "@nestjs/common": ">=11.0.0",
+    "@nestjs/core": ">=11.0.0",
+    "hono": ">=4.0.0"
   },
   "devDependencies": {
     "@biomejs/biome": "2.4.14",
