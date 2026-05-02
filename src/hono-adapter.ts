@@ -20,7 +20,7 @@ import type {
 	RequestHandler,
 	VersionValue,
 } from '@nestjs/common/interfaces'
-import { AbstractHttpAdapter } from '@nestjs/core/adapters/http-adapter'
+import { AbstractHttpAdapter } from '@nestjs/core'
 import { type Context, Hono, type MiddlewareHandler } from 'hono'
 import { cors } from 'hono/cors'
 import {

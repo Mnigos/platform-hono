@@ -1,20 +1,103 @@
-# platform-hono
+# @mnigos/platform-hono
 
-NestJS HTTP adapter package for Hono.
+NestJS HTTP adapter for Hono.
 
-This repository contains the extracted Hono HTTP adapter used by `rigtch.fm`.
-The adapter is intended to integrate with NestJS, Hono, oRPC, better-auth, and
-`nestjs-better-auth`.
+This package provides the extracted Hono adapter used by `rigtch.fm`. It is
+designed for Bun-first NestJS applications and keeps the adapter surface small:
+`HonoAdapter`, `HonoAdapterOptions`, and the `NestHonoRequest` request type.
 
-## Usage
+## Installation
+
+```bash
+bun add @mnigos/platform-hono hono @hono/node-server @nestjs/common @nestjs/core
+```
+
+`@nestjs/common`, `@nestjs/core`, `hono`, and `@hono/node-server` are peer
+dependencies.
+
+## Bootstrap
 
 ```ts
 import { NestFactory } from '@nestjs/core'
 import { HonoAdapter } from '@mnigos/platform-hono'
 import { AppModule } from './app.module'
 
+const adapter = new HonoAdapter()
+const app = await NestFactory.create(AppModule, adapter)
+
+await app.listen(3000)
+```
+
+## CORS
+
+Use Nest's normal CORS API:
+
+```ts
+const adapter = new HonoAdapter()
+const app = await NestFactory.create(AppModule, adapter)
+
+app.enableCors({
+	origin: 'https://example.com',
+})
+```
+
+## Body Parsing
+
+Request body parsing is enabled by default unless Nest is bootstrapped with
+`bodyParser: false`.
+
+The adapter parses JSON, text, form, and multipart request bodies and stores the
+parsed value on `req.body` for Nest controllers and decorators.
+
+```ts
+const app = await NestFactory.create(AppModule, new HonoAdapter(), {
+	bodyParser: false,
+})
+```
+
+## Parser Skips
+
+Use `skipBodyParserFor` for routes that need the original request stream, such
+as better-auth or webhook endpoints:
+
+```ts
 const adapter = new HonoAdapter({
-	skipBodyParserFor: ['/api/auth'],
+	skipBodyParserFor: ['/api/auth', '/webhooks/stripe'],
+})
+```
+
+Path matching is segment-aware. A policy for `/api/auth` matches `/api/auth`
+and `/api/auth/session`, but not `/api/authentication`.
+
+## Raw Body
+
+When Nest enables `rawBody`, JSON and text bodies are read once. The adapter
+stores `req.rawBody` and parses the same payload, avoiding a second stream read.
+
+```ts
+const app = await NestFactory.create(AppModule, new HonoAdapter(), {
+	rawBody: true,
+})
+```
+
+## Request Size Limits
+
+The adapter applies a default body limit of 1 MiB before parsing JSON, text,
+form, or multipart bodies.
+
+Configure `bodyLimit` to change the global default, or set `bodyLimit: false`
+to disable the global default:
+
+```ts
+const adapter = new HonoAdapter({
+	bodyLimit: 2 * 1024 * 1024,
+})
+```
+
+Use route-specific `requestSizeLimits` for upload-heavy paths:
+
+```ts
+const adapter = new HonoAdapter({
 	requestSizeLimits: [
 		{
 			path: '/api/uploads',
@@ -23,37 +106,9 @@ const adapter = new HonoAdapter({
 		},
 	],
 })
-
-const app = await NestFactory.create(AppModule, adapter)
-await app.listen(3000)
 ```
 
-## Body Parsing and Limits
-
-Request body parsing is enabled by default unless Nest is bootstrapped with
-`bodyParser: false`.
-
-The adapter applies a default body limit of 1 MiB before parsing JSON, text,
-form, or multipart bodies. Configure `bodyLimit` to change the global default,
-or set `bodyLimit: false` to disable the global default. Route-specific
-`requestSizeLimits` still apply when configured.
-
-`requestSizeLimits` and `skipBodyParserFor` use route-aware matching. A policy
-for `/api/auth` matches `/api/auth` and `/api/auth/session`, but not
-`/api/authentication`. If multiple request size limits match, the longest path
-wins.
-
-Use `skipBodyParserFor` for routes that need the original request stream, such
-as better-auth or webhook endpoints:
-
-```ts
-new HonoAdapter({
-	skipBodyParserFor: ['/api/auth', '/webhooks/stripe'],
-})
-```
-
-When Nest enables `rawBody`, JSON and text bodies are read once. The adapter
-stores `req.rawBody` and parses the same payload, avoiding a second stream read.
+If multiple request size limits match, the longest matching path wins.
 
 Malformed JSON and form bodies are rejected as bad requests. Payloads exceeding
 the configured limit are rejected as payload-too-large errors.
@@ -66,17 +121,19 @@ from spoofing `req.ip` with headers such as `x-forwarded-for`.
 Enable `trustProxy` only when the application is deployed behind a trusted proxy:
 
 ```ts
-new HonoAdapter({
+const adapter = new HonoAdapter({
 	trustProxy: true,
 })
 ```
 
 By default, trusted proxy mode considers common proxy headers including
 `cf-connecting-ip`, `x-forwarded-for`, `x-real-ip`, `forwarded`, and
-`true-client-ip`. To restrict the accepted headers:
+`true-client-ip`.
+
+To restrict the accepted headers:
 
 ```ts
-new HonoAdapter({
+const adapter = new HonoAdapter({
 	trustProxy: {
 		headers: ['cf-connecting-ip'],
 	},
@@ -87,13 +144,42 @@ Host headers and redirect targets remain caller-controlled HTTP input. Validate
 public origins and redirect destinations in application code before using them
 for security-sensitive flows.
 
-## Commands
+## Request Type
 
-```bash
-bun install
-bun run check
-bun run typecheck
-bun run test
-bun run test:integration
-bun run build
+The adapter attaches Nest-compatible fields to Hono's request object. Use
+`NestHonoRequest` when a controller needs to type `@Req()` access:
+
+```ts
+import { Controller, Post, Req } from '@nestjs/common'
+import type { NestHonoRequest } from '@mnigos/platform-hono'
+
+@Controller()
+export class WebhookController {
+	@Post('/webhooks/example')
+	handleWebhook(@Req() req: NestHonoRequest) {
+		return {
+			body: req.body,
+			rawBody: req.rawBody,
+		}
+	}
+}
 ```
+
+Adapter-provided request fields include `body`, `rawBody`, `params`, `query`,
+`headers`, `ip`, and `baseUrl`.
+
+## Compatibility
+
+| Area | Status |
+| --- | --- |
+| NestJS controllers and decorators | Supported |
+| Hono node server | Supported |
+| JSON, text, form, and multipart bodies | Supported |
+| Raw body for JSON and text | Supported |
+| Static assets | Supported |
+| CORS | Supported |
+| oRPC | Planned |
+| better-auth | Planned |
+| nestjs-better-auth | Planned |
+| Nest versioning | Unsupported |
+| Nest views/templates | Unsupported |

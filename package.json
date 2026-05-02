@@ -19,7 +19,7 @@
     }
   },
   "scripts": {
-    "build": "tsc -p tsconfig.build.json",
+    "build": "rm -rf dist && tsc -p tsconfig.build.json --emitDeclarationOnly && bun build src/index.ts --outfile dist/index.js --target node --format esm --packages external --sourcemap=none",
     "check": "ultracite check",
     "check:fix": "ultracite fix --unsafe",
     "clean": "git clean -xdf .cache .turbo coverage dist node_modules",
