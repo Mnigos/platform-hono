@@ -80,8 +80,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			if (!req.headers) req.headers = Object.fromEntries(ctx.req.raw.headers)
 			const clientIp = extractClientIp(ctx, this.adapterOptions)
 			if (!req.ip && clientIp) req.ip = clientIp
-			await routeHandler(ctx.req, ctx, next)
-			return getFinalizedResponse(ctx)
+			const response = await routeHandler(ctx.req, ctx, next)
+			return getFinalizedResponse(ctx, response)
 		}
 	}
 
@@ -131,6 +131,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			case 'options':
 				this.hono.options(routePath, wrappedHandler)
 				break
+			/* v8 ignore next -- method is constrained by the private union type. */
 			default:
 				break
 		}

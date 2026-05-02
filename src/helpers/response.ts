@@ -29,7 +29,7 @@ export async function createResponse(ctx: Context, body?: unknown) {
 	if (
 		body === undefined &&
 		normalizedCtx.res &&
-		normalizedCtx.res.body !== null
+		(normalizedCtx.finalized || normalizedCtx.res.body !== null)
 	) {
 		return normalizedCtx.res
 	}
