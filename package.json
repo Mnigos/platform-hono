@@ -24,11 +24,12 @@
     "check": "ultracite check",
     "check:fix": "ultracite fix --unsafe",
     "clean": "git clean -xdf .cache .turbo coverage dist node_modules",
-    "prepublish:check": "bun changeset status && bun run check && bun run typecheck && bun run test && bun run test:integration && bun run build && node --input-type=module -e \"const mod = await import('./dist/index.js'); if (typeof mod.HonoAdapter !== 'function') throw new Error('HonoAdapter export missing')\" && bun --eval \"const mod = await import('./dist/index.js'); if (typeof mod.HonoAdapter !== 'function') throw new Error('HonoAdapter export missing')\" && npm pack --dry-run",
+    "prepublish:check": "bun changeset version && bun run check && bun run typecheck && bun run test && bun run test:integration && bun run build && bun run test:exports && npm pack --dry-run",
     "publish:public": "npm publish --access public",
     "release": "bun run prepublish:check && changeset publish",
     "test": "vitest run --passWithNoTests",
     "test:coverage": "vitest run --coverage --passWithNoTests",
+    "test:exports": "bun scripts/check-exports.ts",
     "test:integration": "vitest run -c vitest.integration.config.ts --passWithNoTests",
     "typecheck": "tsc --noEmit"
   },
