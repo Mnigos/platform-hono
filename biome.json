@@ -51,7 +51,10 @@
       "quoteStyle": "single",
       "semicolons": "asNeeded"
     },
-    "globals": ["Bun"]
+    "globals": ["Bun"],
+    "parser": {
+      "unsafeParameterDecoratorsEnabled": true
+    }
   },
   "json": {
     "formatter": {
