@@ -1,5 +1,11 @@
 # @mnigos/platform-hono
 
+## 0.1.2
+
+### Patch Changes
+
+- Allow Node 18-compatible Hono dependencies by supporting `@hono/node-server` 1.19.11 and newer with `hono` 4.10.7 and newer.
+
 ## 0.1.1
 
 ### Patch Changes

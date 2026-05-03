@@ -1,6 +1,5 @@
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common'
 import type { Context } from 'hono'
-import { bodyLimit } from 'hono/body-limit'
 import {
 	DEFAULT_BODY_LIMIT,
 	type HonoAdapterOptions,
@@ -56,14 +55,15 @@ function isParsableContentType(contentType: string | undefined) {
  * middleware instead of letting Hono throw its default HTTPException.
  */
 export function createBodyLimit(maxSize: number) {
-	return bodyLimit({
-		maxSize,
-		onError: ctx => {
-			throw new PayloadTooLargeException(
-				`Body size exceeded: ${maxSize} bytes. Size: ${ctx.req.header('Content-Length') ?? 'unknown'} bytes. Method: ${ctx.req.method}. Path: ${ctx.req.path}`
-			)
-		},
-	})
+	return async (ctx: Context, next: () => Promise<void>) => {
+		await enforceRawBodyLimit(
+			ctx,
+			maxSize,
+			`Body size exceeded: ${maxSize} bytes. Size: ${ctx.req.header('Content-Length') ?? 'unknown'} bytes. Method: ${ctx.req.method}. Path: ${ctx.req.path}`
+		)
+
+		await next()
+	}
 }
 
 async function parseRequestBody(
@@ -118,14 +118,48 @@ async function enforceBodyLimit(
 	maxBytes: number,
 	errorMessage?: string
 ) {
-	const middleware = bodyLimit({
-		maxSize: maxBytes,
-		onError: () => {
-			throw new PayloadTooLargeException(errorMessage ?? 'Payload too large')
-		},
-	})
+	await enforceRawBodyLimit(ctx, maxBytes, errorMessage ?? 'Payload too large')
+}
 
-	await middleware(ctx, () => Promise.resolve())
+async function enforceRawBodyLimit(
+	ctx: Context,
+	maxBytes: number,
+	errorMessage: string
+) {
+	const contentLengthHeader = ctx.req.header('content-length')
+	if (contentLengthHeader) {
+		const contentLength = Number.parseInt(contentLengthHeader, 10)
+		if (Number.isFinite(contentLength) && contentLength > maxBytes)
+			throw new PayloadTooLargeException(errorMessage)
+	}
+
+	if (!ctx.req.raw.body) return
+
+	const reader = ctx.req.raw.body.getReader()
+	const chunks: Uint8Array[] = []
+	let size = 0
+
+	for (;;) {
+		const { done, value } = await reader.read()
+		if (done) break
+
+		size += value.byteLength
+		if (size > maxBytes) throw new PayloadTooLargeException(errorMessage)
+
+		chunks.push(value)
+	}
+
+	ctx.req.raw = new Request(ctx.req.raw.url, {
+		body: new ReadableStream({
+			start(controller) {
+				for (const chunk of chunks) controller.enqueue(chunk)
+				controller.close()
+			},
+		}),
+		duplex: 'half',
+		headers: ctx.req.raw.headers,
+		method: ctx.req.raw.method,
+	} as RequestInit & { duplex: 'half' })
 }
 
 function getEffectiveBodyLimit(
