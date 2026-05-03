@@ -1,5 +1,11 @@
 # @mnigos/platform-hono
 
+## 0.1.3
+
+### Patch Changes
+
+- Support named wildcard route params from Nest route patterns.
+
 ## 0.1.2
 
 ### Patch Changes

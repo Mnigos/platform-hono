@@ -42,6 +42,10 @@ type RouteHandler = (
 	res: Context
 ) => Response | undefined | Promise<Response | undefined>
 
+function normalizeHonoPath(path: string) {
+	return path.replace(/\/\*([A-Za-z_$][\w$]*)/g, '/:$1{.*}')
+}
+
 export class HonoAdapter extends AbstractHttpAdapter<
 	HttpServer | HttpsServer,
 	Context['req'],
@@ -109,34 +113,35 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			pathOrHandler,
 			handler
 		)
+		const honoPath = normalizeHonoPath(routePath)
 		const wrappedHandler = this.createRouteHandler(
 			routeHandler as RequestHandler
 		)
 
 		switch (method) {
 			case 'all':
-				this.hono.all(routePath, wrappedHandler)
+				this.hono.all(honoPath, wrappedHandler)
 				break
 			case 'get':
-				this.hono.get(routePath, wrappedHandler)
+				this.hono.get(honoPath, wrappedHandler)
 				break
 			case 'post':
-				this.hono.post(routePath, wrappedHandler)
+				this.hono.post(honoPath, wrappedHandler)
 				break
 			case 'put':
-				this.hono.put(routePath, wrappedHandler)
+				this.hono.put(honoPath, wrappedHandler)
 				break
 			case 'delete':
-				this.hono.delete(routePath, wrappedHandler)
+				this.hono.delete(honoPath, wrappedHandler)
 				break
 			case 'use':
-				this.hono.use(routePath, wrappedHandler)
+				this.hono.use(honoPath, wrappedHandler)
 				break
 			case 'patch':
-				this.hono.patch(routePath, wrappedHandler)
+				this.hono.patch(honoPath, wrappedHandler)
 				break
 			case 'options':
-				this.hono.options(routePath, wrappedHandler)
+				this.hono.options(honoPath, wrappedHandler)
 				break
 			/* v8 ignore next -- method is constrained by the private union type. */
 			default:
@@ -383,9 +388,14 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			const routeMethod = (
 				routeMethodsMap[requestMethod] || this.hono.get
 			).bind(this.hono)
-			routeMethod(path, async (ctx: Context, next: () => Promise<void>) => {
-				await callback(ctx.req, ctx, next)
-			})
+			routeMethod(
+				normalizeHonoPath(path),
+				async (ctx: Context, next: () => Promise<void>) => {
+					const req = getNestHonoRequest(ctx.req)
+					req.params = ctx.req.param()
+					await callback(ctx.req, ctx, next)
+				}
+			)
 		})
 	}
 

@@ -163,6 +163,24 @@ describe('HonoAdapter', () => {
 		})
 	})
 
+	test('supports named wildcard params from Nest route patterns', async () => {
+		const adapter = new HonoAdapter()
+		let capturedRequest: NestHonoRequest | undefined
+
+		adapter.delete('/*path', req => {
+			capturedRequest = getNestHonoRequest(req)
+		})
+
+		const response = await adapter.hono.request('/world/who%3F', {
+			method: 'DELETE',
+		})
+
+		expect(response.status).toBe(200)
+		expect(capturedRequest).toMatchObject({
+			params: { path: 'world/who?' },
+		})
+	})
+
 	test('normalizes request metadata in initialized middleware', async () => {
 		const adapter = createInitializedAdapter({ trustProxy: true })
 		let capturedRequest: NestHonoRequest | undefined
@@ -509,6 +527,15 @@ describe('HonoAdapter', () => {
 				await adapter.reply(ctx, 'fallback')
 			}
 		)
+		getFactory(
+			'/wildcard/*path',
+			async (
+				req: NestHonoRequest,
+				ctx: Parameters<HonoAdapter['reply']>[0]
+			) => {
+				await adapter.reply(ctx, req.params?.path)
+			}
+		)
 
 		await expect((await adapter.hono.request('/factory')).text()).resolves.toBe(
 			'factory'
@@ -519,6 +546,9 @@ describe('HonoAdapter', () => {
 		await expect(
 			(await adapter.hono.request('/fallback')).text()
 		).resolves.toBe('fallback')
+		await expect(
+			(await adapter.hono.request('/wildcard/one/two')).text()
+		).resolves.toBe('one/two')
 	})
 
 	test('returns request method, URL, adapter type, and unsupported method behavior', () => {
