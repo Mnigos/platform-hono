@@ -1,5 +1,11 @@
 # @mnigos/platform-hono
 
+## 0.1.4
+
+### Patch Changes
+
+- Restore request body compatibility for Nest guards and middleware while preserving the raw Hono request body for downstream consumers like oRPC.
+
 ## 0.1.3
 
 ### Patch Changes

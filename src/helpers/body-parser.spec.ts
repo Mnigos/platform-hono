@@ -75,6 +75,7 @@ describe('body parser helpers', () => {
 
 		expect(req.body).toEqual({ ok: true })
 		expect(req.rawBody).toEqual(Buffer.from(bodyText))
+		await expect(req.raw.text()).resolves.toBe(bodyText)
 	})
 
 	test('parses empty JSON bodies as empty objects', async () => {
@@ -106,21 +107,25 @@ describe('body parser helpers', () => {
 		const formBody = { name: 'Ada' }
 		const req = await parse(
 			createContext({
+				bodyText: 'name=Ada',
 				headers: { 'content-type': 'application/x-www-form-urlencoded' },
 				parsedBody: formBody,
 			})
 		)
 
 		expect(req.body).toBe(formBody)
+		await expect(req.raw.text()).resolves.toBe('name=Ada')
 
 		const multipartReq = await parse(
 			createContext({
+				bodyText: '--test',
 				headers: { 'content-type': 'multipart/form-data; boundary=test' },
 				parsedBody: { file: new Blob(['abc']) },
 			})
 		)
 
 		expect(multipartReq.body).toMatchObject({ file: expect.any(Blob) })
+		await expect(multipartReq.raw.text()).resolves.toBe('--test')
 	})
 
 	test('ignores unsupported content types', async () => {

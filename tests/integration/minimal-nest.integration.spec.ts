@@ -61,6 +61,27 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
+	test('keeps request.body available for guards while preserving the raw request body', async () => {
+		const app = await startApp(new HonoAdapter())
+
+		try {
+			const response = await fetch(`${app.baseUrl}/compatibility`, {
+				body: JSON.stringify({ ok: true }),
+				headers: { 'content-type': 'application/json' },
+				method: 'POST',
+			})
+
+			expect(response.status).toBe(201)
+			await expect(response.json()).resolves.toEqual({
+				body: { ok: true },
+				guardBody: { ok: true },
+				rawBody: { ok: true },
+			})
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('serves PUT, PATCH, DELETE, and OPTIONS routes over HTTP', async () => {
 		const app = await startApp()
 

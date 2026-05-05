@@ -4,15 +4,18 @@ import {
 	type ArgumentsHost,
 	BadRequestException,
 	Body,
+	type CanActivate,
 	Catch,
 	Controller,
 	Delete,
 	type ExceptionFilter,
+	type ExecutionContext,
 	Get,
 	Header,
 	Headers,
 	HttpCode,
 	type INestApplication,
+	Injectable,
 	Module,
 	Options,
 	Param,
@@ -23,6 +26,7 @@ import {
 	Redirect,
 	Req,
 	UseFilters,
+	UseGuards,
 } from '@nestjs/common'
 import type { NestApplicationOptions } from '@nestjs/common/interfaces'
 import { NestFactory } from '@nestjs/core'
@@ -32,8 +36,19 @@ import { HonoAdapter } from '../../../src'
 interface CapturedRequest {
 	baseUrl?: string
 	body?: unknown
+	guardBody?: unknown
 	headers?: Record<string, string>
+	raw?: Request
 	rawBody?: Buffer
+}
+
+@Injectable()
+class RequestBodyCompatibilityGuard implements CanActivate {
+	canActivate(context: ExecutionContext) {
+		const request = context.switchToHttp().getRequest<CapturedRequest>()
+		request.guardBody = request.body
+		return true
+	}
 }
 
 @Catch(BadRequestException)
@@ -99,6 +114,16 @@ class TestController {
 		return { body }
 	}
 
+	@Post('/compatibility')
+	@UseGuards(RequestBodyCompatibilityGuard)
+	async compatibility(@Body() body: unknown, @Req() req: CapturedRequest) {
+		return {
+			body,
+			guardBody: req.guardBody,
+			rawBody: req.raw ? await req.raw.clone().json() : undefined,
+		}
+	}
+
 	@Post('/auth/session')
 	authSession(@Req() req: CapturedRequest) {
 		return {
@@ -142,6 +167,7 @@ class TestController {
 
 @Module({
 	controllers: [TestController],
+	providers: [RequestBodyCompatibilityGuard],
 })
 class TestModule {}
 

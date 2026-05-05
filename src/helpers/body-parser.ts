@@ -30,7 +30,13 @@ export async function parseRequestBodyWithLimits(
 			requestSizeLimit?.errorMessage
 		)
 
-	await parseRequestBody(ctx, contentType, rawBody)
+	const preservedRawRequest = cloneRawRequest(ctx.req.raw)
+
+	try {
+		await parseRequestBody(ctx, contentType, rawBody)
+	} finally {
+		if (preservedRawRequest) ctx.req.raw = preservedRawRequest
+	}
 
 	if (requestSizeLimit) {
 		const parsedBodySize = getParsedBodySize(req.body)
@@ -38,6 +44,18 @@ export async function parseRequestBodyWithLimits(
 			throw new PayloadTooLargeException(
 				requestSizeLimit.errorMessage ?? 'Payload too large'
 			)
+	}
+}
+
+function cloneRawRequest(
+	rawRequest: Context['req']['raw']
+): Context['req']['raw'] | undefined {
+	if (rawRequest.bodyUsed) return
+
+	try {
+		return rawRequest.clone() as Context['req']['raw']
+	} catch {
+		return
 	}
 }
 

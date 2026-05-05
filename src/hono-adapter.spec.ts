@@ -248,6 +248,19 @@ describe('HonoAdapter', () => {
 		expect(req.body).toEqual({ ok: true })
 	})
 
+	test('preserves raw request bodies for downstream consumers after parsing', async () => {
+		const adapter = createInitializedAdapter()
+		const bodyText = JSON.stringify({ ok: true })
+
+		const req = (await requestWithCapturedBody(adapter, '/json', {
+			body: bodyText,
+			headers: { 'content-type': 'application/json' },
+		})) as NestHonoRequest & { raw: Request }
+
+		expect(req.body).toEqual({ ok: true })
+		await expect(req.raw.text()).resolves.toBe(bodyText)
+	})
+
 	test('leaves request bodies untouched when bodyParser is disabled', async () => {
 		const adapter = new HonoAdapter()
 		adapter.initHttpServer({ bodyParser: false })
