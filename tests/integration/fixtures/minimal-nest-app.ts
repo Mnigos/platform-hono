@@ -1,5 +1,6 @@
 import 'reflect-metadata'
 import type { Server } from 'node:http'
+import { Readable } from 'node:stream'
 import {
 	type ArgumentsHost,
 	BadRequestException,
@@ -25,6 +26,7 @@ import {
 	Query,
 	Redirect,
 	Req,
+	StreamableFile,
 	UseFilters,
 	UseGuards,
 } from '@nestjs/common'
@@ -40,6 +42,16 @@ interface CapturedRequest {
 	headers?: Record<string, string>
 	raw?: Request
 	rawBody?: Buffer
+}
+
+function delay(ms: number) {
+	return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+async function* streamFileChunks() {
+	yield Buffer.from('chunk-one\n')
+	await delay(75)
+	yield Buffer.from('chunk-two\n')
 }
 
 @Injectable()
@@ -151,6 +163,31 @@ class TestController {
 	@Redirect('/hello/redirected?q=yes', 302)
 	redirect() {
 		return
+	}
+
+	@Get('/download/buffer')
+	downloadBuffer() {
+		return new StreamableFile(Buffer.from('buffer file'), {
+			disposition: 'attachment; filename="buffer.txt"',
+			type: 'text/plain',
+		})
+	}
+
+	@Get('/download/stream')
+	downloadStream() {
+		return new StreamableFile(Readable.from(['streamed file']), {
+			disposition: 'attachment; filename="stream.txt"',
+			length: 13,
+			type: 'text/plain',
+		})
+	}
+
+	@Get('/download/chunked')
+	downloadChunked() {
+		return new StreamableFile(Readable.from(streamFileChunks()), {
+			disposition: 'attachment; filename="chunked.txt"',
+			type: 'text/plain',
+		})
 	}
 
 	@Get('/fail')
