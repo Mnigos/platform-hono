@@ -1,5 +1,11 @@
 # @mnigos/platform-hono
 
+## 0.2.0
+
+### Minor Changes
+
+- Add support for Nest StreamableFile, direct Node and Web stream returns, and server-sent events in the Hono adapter.
+
 ## 0.1.4
 
 ### Patch Changes
