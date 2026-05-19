@@ -3,6 +3,10 @@ import { join } from 'node:path'
 import { HonoAdapter } from '../../src'
 import { startApp } from './fixtures/minimal-nest-app'
 
+function delay(ms: number) {
+	return new Promise(resolve => setTimeout(resolve, ms))
+}
+
 describe('minimal Nest integration', () => {
 	test('boots a Nest app and serves controller params, query strings, headers, and metadata over HTTP', async () => {
 		const app = await startApp()
@@ -264,6 +268,59 @@ describe('minimal Nest integration', () => {
 			const notFoundResponse = await fetch(`${app.baseUrl}/missing`)
 			expect(notFoundResponse.status).toBe(404)
 			await expect(notFoundResponse.text()).resolves.toBe('Not Found')
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('streams Nest StreamableFile responses over HTTP', async () => {
+		const app = await startApp()
+
+		try {
+			const bufferResponse = await fetch(`${app.baseUrl}/download/buffer`)
+			expect(bufferResponse.status).toBe(200)
+			expect(bufferResponse.headers.get('content-type')).toBe('text/plain')
+			expect(bufferResponse.headers.get('content-disposition')).toBe(
+				'attachment; filename="buffer.txt"'
+			)
+			expect(bufferResponse.headers.get('content-length')).toBe('11')
+			await expect(bufferResponse.text()).resolves.toBe('buffer file')
+
+			const streamResponse = await fetch(`${app.baseUrl}/download/stream`)
+			expect(streamResponse.status).toBe(200)
+			expect(streamResponse.headers.get('content-type')).toBe('text/plain')
+			expect(streamResponse.headers.get('content-disposition')).toBe(
+				'attachment; filename="stream.txt"'
+			)
+			expect(streamResponse.headers.get('content-length')).toBe('13')
+			await expect(streamResponse.text()).resolves.toBe('streamed file')
+
+			const chunkedResponse = await fetch(`${app.baseUrl}/download/chunked`)
+			expect(chunkedResponse.status).toBe(200)
+			expect(chunkedResponse.headers.get('content-type')).toBe('text/plain')
+			expect(chunkedResponse.headers.get('content-disposition')).toBe(
+				'attachment; filename="chunked.txt"'
+			)
+
+			const reader = chunkedResponse.body?.getReader()
+			if (!reader) throw new Error('Expected a chunked response body reader')
+
+			const firstChunk = await reader.read()
+			expect(firstChunk.done).toBe(false)
+			expect(new TextDecoder().decode(firstChunk.value)).toBe('chunk-one\n')
+
+			const secondRead = reader.read()
+			await expect(
+				Promise.race([
+					secondRead.then(() => 'resolved'),
+					delay(25).then(() => 'pending'),
+				])
+			).resolves.toBe('pending')
+
+			const secondChunk = await secondRead
+			expect(secondChunk.done).toBe(false)
+			expect(new TextDecoder().decode(secondChunk.value)).toBe('chunk-two\n')
+			await expect(reader.read()).resolves.toMatchObject({ done: true })
 		} finally {
 			await app.close()
 		}

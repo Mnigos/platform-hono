@@ -1,3 +1,5 @@
+import { PassThrough, Readable } from 'node:stream'
+import { StreamableFile } from '@nestjs/common'
 import { Hono } from 'hono'
 import {
 	createResponse,
@@ -19,6 +21,10 @@ async function getContext() {
 
 	if (!capturedContext) throw new Error('Context was not captured')
 	return capturedContext
+}
+
+function delay(ms: number) {
+	return new Promise(resolve => setTimeout(resolve, ms))
 }
 
 describe('response helpers', () => {
@@ -47,6 +53,56 @@ describe('response helpers', () => {
 			'application/octet-stream'
 		)
 		await expect(response.text()).resolves.toBe('abc')
+	})
+
+	test('creates streamable file responses with file headers', async () => {
+		const ctx = await getContext()
+		const file = new StreamableFile(Readable.from(['abc']), {
+			disposition: 'attachment; filename="file.txt"',
+			length: 3,
+			type: 'text/plain',
+		})
+
+		const response = await createResponse(ctx, file)
+
+		expect(response.headers.get('content-type')).toBe('text/plain')
+		expect(response.headers.get('content-disposition')).toBe(
+			'attachment; filename="file.txt"'
+		)
+		expect(response.headers.get('content-length')).toBe('3')
+		await expect(response.text()).resolves.toBe('abc')
+	})
+
+	test('streams streamable file chunks as they become available', async () => {
+		const ctx = await getContext()
+		const stream = new PassThrough()
+		const file = new StreamableFile(stream, {
+			type: 'text/plain',
+		})
+
+		const response = await createResponse(ctx, file)
+		const reader = response.body?.getReader()
+
+		if (!reader) throw new Error('Expected a response body reader')
+
+		stream.write('first')
+		const firstChunk = await reader.read()
+		expect(firstChunk.done).toBe(false)
+		expect(new TextDecoder().decode(firstChunk.value)).toBe('first')
+
+		const secondRead = reader.read()
+		await expect(
+			Promise.race([
+				secondRead.then(() => 'resolved'),
+				delay(10).then(() => 'pending'),
+			])
+		).resolves.toBe('pending')
+
+		stream.end('second')
+		const secondChunk = await secondRead
+		expect(secondChunk.done).toBe(false)
+		expect(new TextDecoder().decode(secondChunk.value)).toBe('second')
+		await expect(reader.read()).resolves.toMatchObject({ done: true })
 	})
 
 	test('preserves prebuilt responses', async () => {
