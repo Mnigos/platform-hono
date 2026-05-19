@@ -1,4 +1,4 @@
-import type { Readable } from 'node:stream'
+import { Readable } from 'node:stream'
 import { StreamableFile } from '@nestjs/common'
 import type { Context } from 'hono'
 
@@ -39,26 +39,38 @@ function toUint8Array(chunk: unknown) {
 	const constructorName =
 		chunk === null ? 'null' : (new Object(chunk).constructor?.name ?? 'unknown')
 	throw new TypeError(
-		`Unsupported StreamableFile chunk type: ${typeof chunk}, constructor: ${constructorName}`
+		`Unsupported response stream chunk type: ${typeof chunk}, constructor: ${constructorName}`
+	)
+}
+
+function createByteStream(stream: ReadableStream<unknown>) {
+	return stream.pipeThrough(
+		new TransformStream<unknown, Uint8Array>({
+			transform(chunk, controller) {
+				controller.enqueue(toUint8Array(chunk))
+			},
+		})
 	)
 }
 
 function createReadableStream(readable: Readable) {
-	return new ReadableStream<Uint8Array>({
-		async start(controller) {
-			try {
-				for await (const chunk of readable) {
-					controller.enqueue(toUint8Array(chunk))
-				}
-				controller.close()
-			} catch (error) {
-				controller.error(error)
-			}
-		},
-		cancel(reason) {
-			readable.destroy(reason instanceof Error ? reason : undefined)
-		},
-	})
+	return createByteStream(Readable.toWeb(readable) as ReadableStream<unknown>)
+}
+
+function createStreamResponse(ctx: Context, stream: ReadableStream<unknown>) {
+	const responseContentType = ctx.res.headers.get('Content-Type')
+	if (!responseContentType || responseContentType.startsWith('text/plain')) {
+		ctx.res.headers.set('Content-Type', 'application/octet-stream')
+	}
+
+	return ctx.body(createByteStream(stream))
+}
+
+function createNodeStreamResponse(ctx: Context, readable: Readable) {
+	return createStreamResponse(
+		ctx,
+		Readable.toWeb(readable) as ReadableStream<unknown>
+	)
 }
 
 function createStreamableFileResponse(ctx: Context, file: StreamableFile) {
@@ -80,6 +92,14 @@ export function createResponse(ctx: Context, body?: unknown) {
 
 	if (body instanceof StreamableFile) {
 		return createStreamableFileResponse(ctx, body)
+	}
+
+	if (body instanceof Readable) {
+		return createNodeStreamResponse(ctx, body)
+	}
+
+	if (body instanceof ReadableStream) {
+		return createStreamResponse(ctx, body)
 	}
 
 	if (body === undefined && finalizedResponses.has(ctx)) {

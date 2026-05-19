@@ -273,6 +273,49 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
+	test('returns supported plain Nest controller values over HTTP', async () => {
+		const app = await startApp()
+
+		try {
+			const arrayResponse = await fetch(`${app.baseUrl}/returns/array`)
+			expect(arrayResponse.status).toBe(200)
+			await expect(arrayResponse.json()).resolves.toEqual(['one', 'two'])
+
+			await expect(
+				(await fetch(`${app.baseUrl}/returns/string`)).text()
+			).resolves.toBe('plain string')
+
+			await expect(
+				(await fetch(`${app.baseUrl}/returns/number`)).text()
+			).resolves.toBe('42')
+
+			await expect(
+				(await fetch(`${app.baseUrl}/returns/boolean`)).text()
+			).resolves.toBe('true')
+
+			const bufferResponse = await fetch(`${app.baseUrl}/returns/buffer`)
+			expect(bufferResponse.headers.get('content-type')).toBe(
+				'application/octet-stream'
+			)
+			await expect(bufferResponse.text()).resolves.toBe('direct buffer')
+
+			const fetchResponse = await fetch(`${app.baseUrl}/returns/response`)
+			expect(fetchResponse.status).toBe(202)
+			expect(fetchResponse.headers.get('x-fetch-response')).toBe('yes')
+			await expect(fetchResponse.text()).resolves.toBe('fetch response')
+
+			await expect(
+				(await fetch(`${app.baseUrl}/returns/promise`)).json()
+			).resolves.toEqual({ resolved: true })
+
+			await expect(
+				(await fetch(`${app.baseUrl}/returns/observable`)).json()
+			).resolves.toEqual({ resolved: 'observable' })
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('streams Nest StreamableFile responses over HTTP', async () => {
 		const app = await startApp()
 
@@ -321,6 +364,48 @@ describe('minimal Nest integration', () => {
 			expect(secondChunk.done).toBe(false)
 			expect(new TextDecoder().decode(secondChunk.value)).toBe('chunk-two\n')
 			await expect(reader.read()).resolves.toMatchObject({ done: true })
+
+			const directNodeResponse = await fetch(
+				`${app.baseUrl}/download/direct-node-stream`
+			)
+			expect(directNodeResponse.status).toBe(200)
+			expect(directNodeResponse.headers.get('content-type')).toBe(
+				'application/octet-stream'
+			)
+			await expect(directNodeResponse.text()).resolves.toBe(
+				'direct node stream'
+			)
+
+			const directWebResponse = await fetch(
+				`${app.baseUrl}/download/direct-web-stream`
+			)
+			expect(directWebResponse.status).toBe(200)
+			expect(directWebResponse.headers.get('content-type')).toBe(
+				'application/octet-stream'
+			)
+			await expect(directWebResponse.text()).resolves.toBe('direct web stream')
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('serves Nest server-sent event streams over HTTP', async () => {
+		const app = await startApp()
+
+		try {
+			const response = await fetch(`${app.baseUrl}/events`)
+
+			expect(response.status).toBe(200)
+			expect(response.headers.get('content-type')).toContain(
+				'text/event-stream'
+			)
+			expect(response.headers.get('cache-control')).toContain('no-cache')
+			expect(response.headers.get('x-sse-test')).toBe('yes')
+			const body = await response.text()
+			expect(body).toContain('event: message')
+			expect(body).toContain('data: {"hello":"one"}')
+			expect(body).toContain('id: custom')
+			expect(body).toContain('data: two')
 		} finally {
 			await app.close()
 		}

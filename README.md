@@ -168,6 +168,56 @@ export class WebhookController {
 Adapter-provided request fields include `body`, `rawBody`, `params`, `query`,
 `headers`, `ip`, and `baseUrl`.
 
+## Response Support
+
+The adapter supports common Nest controller return values:
+
+- JSON-serializable objects and arrays
+- strings, numbers, booleans, buffers, and empty responses
+- `Promise` and non-SSE `Observable` values resolved by Nest
+- `Response` instances from the Fetch API
+- `StreamableFile`
+- Node.js `Readable` streams
+- Web `ReadableStream` streams
+- `@Redirect()`, `@Header()`, and `@HttpCode()`
+- `@Sse()` handlers returning `Observable<MessageEvent>`
+
+Stream chunks must be strings, `Uint8Array`/`Buffer`, or `ArrayBuffer`.
+Object-mode stream chunks are rejected instead of being stringified.
+
+```ts
+import { Controller, Get, Sse, StreamableFile } from '@nestjs/common'
+import { createReadStream } from 'node:fs'
+import { interval, map } from 'rxjs'
+
+@Controller()
+export class FilesController {
+	@Get('/file')
+	file() {
+		return new StreamableFile(createReadStream('report.pdf'), {
+			type: 'application/pdf',
+			disposition: 'attachment; filename="report.pdf"',
+		})
+	}
+
+	@Get('/raw-stream')
+	rawStream() {
+		return createReadStream('report.pdf')
+	}
+
+	@Sse('/events')
+	events() {
+		return interval(1000).pipe(map(() => ({ data: { ok: true } })))
+	}
+}
+```
+
+The following Nest response features are intentionally deferred:
+
+- `@Render()` and template/view-engine rendering
+- Express/Fastify-style manual response APIs via `@Res()`, such as `res.send()`,
+  `res.json()`, `res.end()`, or `stream.pipe(res)`
+
 ## Compatibility
 
 | Area | Status |
@@ -176,10 +226,13 @@ Adapter-provided request fields include `body`, `rawBody`, `params`, `query`,
 | Hono node server | Supported |
 | JSON, text, form, and multipart bodies | Supported |
 | Raw body for JSON and text | Supported |
+| Controller `Response`, `StreamableFile`, Node stream, and Web stream returns | Supported |
+| Nest `@Sse()` server-sent events | Supported |
 | Static assets | Supported |
 | CORS | Supported |
-| oRPC | Planned |
+| oRPC | Supported |
 | better-auth | Planned |
 | nestjs-better-auth | Planned |
+| Express/Fastify-style manual `@Res()` APIs | Deferred |
 | Nest versioning | Unsupported |
 | Nest views/templates | Unsupported |

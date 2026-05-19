@@ -1,11 +1,13 @@
 import {
 	createServer as createHttpServer,
 	type Server as HttpServer,
+	type OutgoingHttpHeaders,
 } from 'node:http'
 import {
 	createServer as createHttpsServer,
 	type Server as HttpsServer,
 } from 'node:https'
+import { PassThrough, Readable } from 'node:stream'
 import { createAdaptorServer } from '@hono/node-server'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response'
@@ -42,8 +44,41 @@ type RouteHandler = (
 	res: Context
 ) => Response | undefined | Promise<Response | undefined>
 
+interface HonoSseContext extends Context {
+	getHeaders?: () => Record<string, string>
+	raw?: HonoSseWritable
+}
+
+interface HonoSseWritable extends PassThrough {
+	flushHeaders: () => void
+	getHeaders: () => Record<string, string>
+	setHeader: (name: string, value: number | string | string[]) => void
+	statusCode?: number
+	writeHead: (
+		statusCode: number,
+		reasonPhraseOrHeaders?: OutgoingHttpHeaders | string,
+		headers?: OutgoingHttpHeaders
+	) => HonoSseWritable
+}
+
 function normalizeHonoPath(path: string) {
 	return path.replace(/\/\*([A-Za-z_$][\w$]*)/g, '/:$1{.*}')
+}
+
+function getResponseHeaders(ctx: Context) {
+	return Object.fromEntries(ctx.res.headers)
+}
+
+function setResponseHeader(
+	ctx: Context,
+	name: string,
+	value: number | string | string[] | undefined
+) {
+	if (value === undefined) return
+	ctx.res.headers.set(
+		name,
+		Array.isArray(value) ? value.join(', ') : String(value)
+	)
 }
 
 export class HonoAdapter extends AbstractHttpAdapter<
@@ -81,6 +116,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	private createRouteHandler(routeHandler: RequestHandler): MiddlewareHandler {
 		return async (ctx, next) => {
+			this.attachSseBridge(ctx)
 			const req = getNestHonoRequest(ctx.req)
 			req.params = ctx.req.param()
 			if (typeof req.query === 'function') req.query = req.query()
@@ -94,6 +130,44 @@ export class HonoAdapter extends AbstractHttpAdapter<
 				response instanceof Response ? response : undefined
 			)
 		}
+	}
+
+	private attachSseBridge(ctx: Context) {
+		const sseCtx = ctx as HonoSseContext
+		if (sseCtx.raw) return
+
+		const stream = new PassThrough() as HonoSseWritable
+		sseCtx.getHeaders = () => getResponseHeaders(ctx)
+		stream.getHeaders = () => getResponseHeaders(ctx)
+		stream.setHeader = (name, value) => {
+			setResponseHeader(ctx, name, value)
+		}
+		stream.flushHeaders = () => undefined
+		stream.writeHead = (statusCode, reasonPhraseOrHeaders, headers) => {
+			const outgoingHeaders =
+				typeof reasonPhraseOrHeaders === 'string'
+					? headers
+					: reasonPhraseOrHeaders
+
+			stream.statusCode = statusCode
+			ctx.status(statusCode as Parameters<Context['status']>[0])
+
+			if (outgoingHeaders) {
+				for (const [name, value] of Object.entries(outgoingHeaders)) {
+					setResponseHeader(ctx, name, value)
+				}
+			}
+
+			if (!ctx.finalized) {
+				finalizeResponse(
+					ctx,
+					ctx.body(Readable.toWeb(stream) as ReadableStream<Uint8Array>)
+				)
+			}
+
+			return stream
+		}
+		sseCtx.raw = stream
 	}
 
 	private registerRoute(
@@ -214,6 +288,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	status(ctx: Context, statusCode: number) {
 		ctx.status(statusCode as Parameters<Context['status']>[0])
+		const sseResponse = (ctx as HonoSseContext).raw
+		if (sseResponse) sseResponse.statusCode = statusCode
 	}
 
 	end() {
