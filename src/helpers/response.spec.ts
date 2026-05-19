@@ -105,6 +105,19 @@ describe('response helpers', () => {
 		await expect(reader.read()).resolves.toMatchObject({ done: true })
 	})
 
+	test('rejects unsupported streamable file chunk shapes', async () => {
+		const ctx = await getContext()
+		const file = new StreamableFile(
+			Readable.from([{ unexpected: true }], { objectMode: true })
+		)
+
+		const response = await createResponse(ctx, file)
+
+		await expect(response.text()).rejects.toThrow(
+			'Unsupported StreamableFile chunk type: object, constructor: Object'
+		)
+	})
+
 	test('preserves prebuilt responses', async () => {
 		const ctx = await getContext()
 		const response = new Response('created', {
