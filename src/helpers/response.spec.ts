@@ -73,6 +73,34 @@ describe('response helpers', () => {
 		await expect(response.text()).resolves.toBe('abc')
 	})
 
+	test('creates direct Node readable stream responses', async () => {
+		const ctx = await getContext()
+
+		const response = await createResponse(ctx, Readable.from(['node stream']))
+
+		expect(response.headers.get('content-type')).toBe(
+			'application/octet-stream'
+		)
+		await expect(response.text()).resolves.toBe('node stream')
+	})
+
+	test('creates direct Web readable stream responses', async () => {
+		const ctx = await getContext()
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('web stream'))
+				controller.close()
+			},
+		})
+
+		const response = await createResponse(ctx, stream)
+
+		expect(response.headers.get('content-type')).toBe(
+			'application/octet-stream'
+		)
+		await expect(response.text()).resolves.toBe('web stream')
+	})
+
 	test('streams streamable file chunks as they become available', async () => {
 		const ctx = await getContext()
 		const stream = new PassThrough()
@@ -114,7 +142,7 @@ describe('response helpers', () => {
 		const response = await createResponse(ctx, file)
 
 		await expect(response.text()).rejects.toThrow(
-			'Unsupported StreamableFile chunk type: object, constructor: Object'
+			'Unsupported response stream chunk type: object, constructor: Object'
 		)
 	})
 

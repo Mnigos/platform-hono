@@ -17,6 +17,7 @@ import {
 	HttpCode,
 	type INestApplication,
 	Injectable,
+	type MessageEvent,
 	Module,
 	Options,
 	Param,
@@ -26,6 +27,7 @@ import {
 	Query,
 	Redirect,
 	Req,
+	Sse,
 	StreamableFile,
 	UseFilters,
 	UseGuards,
@@ -33,6 +35,7 @@ import {
 import type { NestApplicationOptions } from '@nestjs/common/interfaces'
 import { NestFactory } from '@nestjs/core'
 import type { Context } from 'hono'
+import { Observable } from 'rxjs'
 import { HonoAdapter } from '../../../src'
 
 interface CapturedRequest {
@@ -52,6 +55,18 @@ async function* streamFileChunks() {
 	yield Buffer.from('chunk-one\n')
 	await delay(75)
 	yield Buffer.from('chunk-two\n')
+}
+
+function createSseEvents() {
+	return new Observable<MessageEvent>(subscriber => {
+		subscriber.next({ data: { hello: 'one' }, type: 'message' })
+		const timeout = setTimeout(() => {
+			subscriber.next({ data: 'two', id: 'custom' })
+			subscriber.complete()
+		}, 20)
+
+		return () => clearTimeout(timeout)
+	})
 }
 
 @Injectable()
@@ -159,6 +174,53 @@ class TestController {
 		return { ok: true }
 	}
 
+	@Get('/returns/array')
+	returnArray() {
+		return ['one', 'two']
+	}
+
+	@Get('/returns/string')
+	returnString() {
+		return 'plain string'
+	}
+
+	@Get('/returns/number')
+	returnNumber() {
+		return 42
+	}
+
+	@Get('/returns/boolean')
+	returnBoolean() {
+		return true
+	}
+
+	@Get('/returns/buffer')
+	returnBuffer() {
+		return Buffer.from('direct buffer')
+	}
+
+	@Get('/returns/response')
+	returnResponse() {
+		return new Response('fetch response', {
+			headers: { 'x-fetch-response': 'yes' },
+			status: 202,
+		})
+	}
+
+	@Get('/returns/promise')
+	returnPromise() {
+		return Promise.resolve({ resolved: true })
+	}
+
+	@Get('/returns/observable')
+	returnObservable() {
+		return new Observable(subscriber => {
+			subscriber.next({ ignored: true })
+			subscriber.next({ resolved: 'observable' })
+			subscriber.complete()
+		})
+	}
+
 	@Get('/redirect')
 	@Redirect('/hello/redirected?q=yes', 302)
 	redirect() {
@@ -188,6 +250,27 @@ class TestController {
 			disposition: 'attachment; filename="chunked.txt"',
 			type: 'text/plain',
 		})
+	}
+
+	@Get('/download/direct-node-stream')
+	downloadDirectNodeStream() {
+		return Readable.from(['direct node stream'])
+	}
+
+	@Get('/download/direct-web-stream')
+	downloadDirectWebStream() {
+		return new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('direct web stream'))
+				controller.close()
+			},
+		})
+	}
+
+	@Sse('/events')
+	@Header('x-sse-test', 'yes')
+	events() {
+		return createSseEvents()
 	}
 
 	@Get('/fail')
