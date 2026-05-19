@@ -35,7 +35,12 @@ function toUint8Array(chunk: unknown) {
 	if (typeof chunk === 'string') return new TextEncoder().encode(chunk)
 	if (chunk instanceof Uint8Array) return chunk
 	if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk)
-	return Buffer.from(String(chunk))
+
+	const constructorName =
+		chunk === null ? 'null' : (new Object(chunk).constructor?.name ?? 'unknown')
+	throw new TypeError(
+		`Unsupported StreamableFile chunk type: ${typeof chunk}, constructor: ${constructorName}`
+	)
 }
 
 function createReadableStream(readable: Readable) {
