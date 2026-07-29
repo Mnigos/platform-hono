@@ -1,4 +1,4 @@
-import type { RequestSizeLimit } from '../options'
+import type { RequestSizeLimit } from '../options.js'
 
 /**
  * Selects the most specific matching request size limit so broad upload limits
@@ -35,5 +35,29 @@ export function isPathMatch(pathname: string, configuredPath: string) {
 
 function normalizeRoutePath(path: string) {
 	if (!path || path === '/') return '/'
-	return path.endsWith('/') ? path.slice(0, -1) : path
+
+	const protectedPercentPath = path.replace(/%25/gi, '%2525')
+	let normalizedPath = protectedPercentPath
+	try {
+		normalizedPath = decodeURI(protectedPercentPath)
+	} catch {
+		normalizedPath = protectedPercentPath.replace(
+			/(?:%[\da-f]{2})+/gi,
+			encodedValue => {
+				try {
+					return decodeURI(encodedValue)
+				} catch {
+					return encodedValue
+				}
+			}
+		)
+	}
+
+	normalizedPath = normalizedPath.replace(/%[\da-f]{2}/gi, value =>
+		value.toUpperCase()
+	)
+	while (normalizedPath.length > 1 && normalizedPath.endsWith('/'))
+		normalizedPath = normalizedPath.slice(0, -1)
+
+	return normalizedPath
 }

@@ -1,3 +1,3 @@
-export type { NestHonoRequest } from './helpers/request'
-export { HonoAdapter } from './hono-adapter'
-export type { HonoAdapterOptions } from './options'
+export type { NestHonoRequest } from './helpers/request.js'
+export { HonoAdapter } from './hono-adapter.js'
+export type { HonoAdapterOptions } from './options.js'

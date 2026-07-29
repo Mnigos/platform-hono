@@ -61,6 +61,27 @@ jobs:
       - name: Build
         run: bun run build
 
-      - name: Pack
-        run: bun pm pack
+      - name: Check packed package
+        run: bun run test:exports
 
+  minimum-peers:
+    name: Minimum peers
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Install peer versions
+        run: bun add --dev --exact @hono/node-server@2.0.5 @nestjs/common@11.0.0 @nestjs/core@11.0.0 hono@4.12.25
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun run test
+
+      - name: Integration tests
+        run: bun run test:integration

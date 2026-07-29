@@ -10,8 +10,22 @@ describe('path matching helpers', () => {
 
 	test('normalizes trailing slashes and root paths', () => {
 		expect(isPathMatch('/api/auth/', '/api/auth')).toBe(true)
+		expect(isPathMatch('/api/auth///', '/api/auth/')).toBe(true)
 		expect(isPathMatch('/anything', '/')).toBe(true)
 		expect(isPathMatch('/anything', '')).toBe(true)
+	})
+
+	test.each<[string, string, boolean]>([
+		['/api/%75ploads/avatar', '/api/uploads', true],
+		['/api/uploads/avatar', '/api/%75ploads', true],
+		['/caf%C3%A9/menu', '/caf%C3%A9', true],
+		['/api%2Fadmin/users', '/api/admin', false],
+		['/api%2fadmin/users', '/api%2Fadmin', true],
+		['/api/%zz/users', '/api/users', false],
+		['/api/%75ploads/%zz', '/api/uploads', true],
+		['/api/%2575ploads', '/api/uploads', false],
+	])('matches encoded path %s against %s', (pathname, configuredPath, expected) => {
+		expect(isPathMatch(pathname, configuredPath)).toBe(expected)
 	})
 
 	test('selects the longest matching request size limit', () => {
@@ -32,5 +46,17 @@ describe('path matching helpers', () => {
 				{ path: '/api/auth', maxBytes: 10 },
 			])
 		).toBeUndefined()
+	})
+
+	test('selects limits for canonicalized request and configured paths', () => {
+		const limits: RequestSizeLimit[] = [
+			{ path: '/api', maxBytes: 100 },
+			{ path: '/api/%75ploads', maxBytes: 10 },
+		]
+
+		expect(getRequestSizeLimit('/api/uplo%61ds/avatar', limits)).toEqual({
+			path: '/api/%75ploads',
+			maxBytes: 10,
+		})
 	})
 })

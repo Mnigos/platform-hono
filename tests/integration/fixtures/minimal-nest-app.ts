@@ -12,13 +12,17 @@ import {
 	type ExceptionFilter,
 	type ExecutionContext,
 	Get,
+	Head,
 	Header,
 	Headers,
 	HttpCode,
 	type INestApplication,
 	Injectable,
 	type MessageEvent,
+	type MiddlewareConsumer,
 	Module,
+	type NestMiddleware,
+	type NestModule,
 	Options,
 	Param,
 	Patch,
@@ -27,6 +31,7 @@ import {
 	Query,
 	Redirect,
 	Req,
+	RequestMethod,
 	Sse,
 	StreamableFile,
 	UseFilters,
@@ -43,8 +48,14 @@ interface CapturedRequest {
 	body?: unknown
 	guardBody?: unknown
 	headers?: Record<string, string>
+	middlewareRan?: boolean
 	raw?: Request
 	rawBody?: Buffer
+}
+
+interface TestNestApplication extends INestApplication {
+	useBodyParser(type: string, options?: unknown): this
+	useStaticAssets(path: string, options?: unknown): this
 }
 
 function delay(ms: number) {
@@ -69,6 +80,26 @@ function createSseEvents() {
 	})
 }
 
+let activeSseSubscriptions = 0
+
+function createInfiniteSseEvents() {
+	return new Observable<MessageEvent>(subscriber => {
+		activeSseSubscriptions += 1
+		const interval = setInterval(() => {
+			subscriber.next({ data: 'tick' })
+		}, 5)
+
+		return () => {
+			activeSseSubscriptions -= 1
+			clearInterval(interval)
+		}
+	})
+}
+
+export function getActiveSseSubscriptions() {
+	return activeSseSubscriptions
+}
+
 @Injectable()
 class RequestBodyCompatibilityGuard implements CanActivate {
 	canActivate(context: ExecutionContext) {
@@ -87,6 +118,22 @@ class TestExceptionFilter implements ExceptionFilter {
 			filtered: true,
 			message: exception.message,
 		})
+	}
+}
+
+@Injectable()
+class TestMiddleware implements NestMiddleware {
+	use(request: CapturedRequest, _response: Context, next: () => void) {
+		request.middlewareRan = true
+		next()
+	}
+}
+
+@Controller({ host: 'example.test' })
+class HostController {
+	@Get('/hosted')
+	hosted() {
+		return { hosted: true }
 	}
 }
 
@@ -136,6 +183,17 @@ class TestController {
 		return
 	}
 
+	@Head('/resource/head')
+	@Header('x-head-handler', 'yes')
+	headResource() {
+		return
+	}
+
+	@Get('/optional{/:id}')
+	optional(@Param('id') id?: string) {
+		return { id: id ?? null }
+	}
+
 	@Post('/echo/nested')
 	echoNested(@Body() body: unknown) {
 		return { body }
@@ -161,6 +219,21 @@ class TestController {
 	@Post('/auth-sibling')
 	authSibling(@Body() body: unknown) {
 		return { body }
+	}
+
+	@Post('/raw-upload')
+	async rawUpload(@Req() req: CapturedRequest) {
+		return { size: req.raw ? (await req.raw.arrayBuffer()).byteLength : 0 }
+	}
+
+	@Get('/middleware/included')
+	middlewareIncluded(@Req() req: CapturedRequest) {
+		return { middlewareRan: req.middlewareRan ?? false }
+	}
+
+	@Get('/middleware/excluded')
+	middlewareExcluded(@Req() req: CapturedRequest) {
+		return { middlewareRan: req.middlewareRan ?? false }
 	}
 
 	@Get('/ip')
@@ -221,6 +294,12 @@ class TestController {
 		})
 	}
 
+	@Get('/returns/problem')
+	@Header('content-type', 'application/problem+json')
+	returnProblem() {
+		return { detail: 'problem' }
+	}
+
 	@Get('/redirect')
 	@Redirect('/hello/redirected?q=yes', 302)
 	redirect() {
@@ -273,6 +352,11 @@ class TestController {
 		return createSseEvents()
 	}
 
+	@Sse('/events/infinite')
+	infiniteEvents() {
+		return createInfiniteSseEvents()
+	}
+
 	@Get('/fail')
 	fail() {
 		throw new BadRequestException('Nope')
@@ -286,20 +370,31 @@ class TestController {
 }
 
 @Module({
-	controllers: [TestController],
-	providers: [RequestBodyCompatibilityGuard],
+	controllers: [HostController, TestController],
+	providers: [RequestBodyCompatibilityGuard, TestMiddleware],
 })
-class TestModule {}
+class TestModule implements NestModule {
+	configure(consumer: MiddlewareConsumer) {
+		consumer
+			.apply(TestMiddleware)
+			.exclude({ path: '/middleware/excluded', method: RequestMethod.GET })
+			.forRoutes('/middleware/included', '/middleware/excluded')
+	}
+}
 
 export async function startApp(
 	adapter = new HonoAdapter(),
 	options: NestApplicationOptions = {},
-	setup?: (app: INestApplication) => void | Promise<void>
+	setup?: (app: TestNestApplication) => void | Promise<void>
 ) {
-	const app = await NestFactory.create(TestModule, adapter, {
-		logger: false,
-		...options,
-	})
+	const app = await NestFactory.create<TestNestApplication>(
+		TestModule,
+		adapter,
+		{
+			logger: false,
+			...options,
+		}
+	)
 
 	await setup?.(app)
 	await app.listen(0)

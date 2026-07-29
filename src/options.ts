@@ -6,6 +6,7 @@ export interface RequestSizeLimit {
 
 export interface TrustProxyOptions {
 	headers?: string[]
+	trustedHops?: number
 }
 
 export interface HonoAdapterOptions {
@@ -17,10 +18,4 @@ export interface HonoAdapterOptions {
 
 export const DEFAULT_BODY_LIMIT = 1024 * 1024
 
-export const DEFAULT_TRUSTED_PROXY_HEADERS = [
-	'cf-connecting-ip',
-	'x-forwarded-for',
-	'x-real-ip',
-	'forwarded',
-	'true-client-ip',
-] as const
+export const DEFAULT_TRUSTED_PROXY_HEADERS = ['x-forwarded-for'] as const
