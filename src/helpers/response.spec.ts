@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import { PassThrough, Readable } from 'node:stream'
 import { StreamableFile } from '@nestjs/common'
 import { Hono } from 'hono'
@@ -8,7 +9,7 @@ import {
 	normalizeContext,
 } from './response'
 
-async function getContext() {
+async function getContext(environment: object = {}) {
 	const app = new Hono()
 	let capturedContext: Parameters<typeof createResponse>[0] | undefined
 
@@ -17,7 +18,7 @@ async function getContext() {
 		return ctx.text('ok')
 	})
 
-	await app.request('/')
+	await app.request('/', undefined, environment)
 
 	if (!capturedContext) throw new Error('Context was not captured')
 	return capturedContext
@@ -84,6 +85,18 @@ describe('response helpers', () => {
 		await expect(response.text()).resolves.toBe('node stream')
 	})
 
+	test('preserves explicit content types for direct streams', async () => {
+		const ctx = await getContext()
+		ctx.res.headers.set('Content-Type', 'text/plain; charset=utf-8')
+
+		const response = await createResponse(ctx, Readable.from(['node stream']))
+
+		expect(response.headers.get('content-type')).toBe(
+			'text/plain; charset=utf-8'
+		)
+		await expect(response.text()).resolves.toBe('node stream')
+	})
+
 	test('creates direct Web readable stream responses', async () => {
 		const ctx = await getContext()
 		const stream = new ReadableStream({
@@ -146,6 +159,35 @@ describe('response helpers', () => {
 		)
 	})
 
+	test('runs StreamableFile error handlers and loggers', async () => {
+		const ctx = await getContext()
+		const streamError = new Error('stream failed')
+		const errorHandlerSpy = vi.fn()
+		const errorLoggerSpy = vi.fn()
+		const file = new StreamableFile(
+			new Readable({
+				read() {
+					this.destroy(streamError)
+				},
+			})
+		)
+			.setErrorHandler(errorHandlerSpy)
+			.setErrorLogger(errorLoggerSpy)
+
+		const response = await createResponse(ctx, file)
+
+		await expect(response.text()).rejects.toThrow('stream failed')
+		expect(errorHandlerSpy).toHaveBeenCalledWith(
+			streamError,
+			expect.objectContaining({
+				destroyed: false,
+				headersSent: false,
+				statusCode: 200,
+			})
+		)
+		expect(errorLoggerSpy).toHaveBeenCalledWith(streamError)
+	})
+
 	test('preserves prebuilt responses', async () => {
 		const ctx = await getContext()
 		const response = new Response('created', {
@@ -153,7 +195,23 @@ describe('response helpers', () => {
 			status: 201,
 		})
 
-		expect(await createResponse(ctx, response)).toBe(response)
+		const createdResponse = await createResponse(ctx, response)
+
+		expect(createdResponse.status).toBe(201)
+		expect(createdResponse.headers.get('x-result')).toBe('ok')
+		await expect(createdResponse.text()).resolves.toBe('created')
+	})
+
+	test('serializes objects for structured JSON content types', async () => {
+		const ctx = await getContext()
+		ctx.res.headers.set('Content-Type', 'application/problem+json')
+
+		const response = await createResponse(ctx, { title: 'Bad request' })
+
+		expect(response.headers.get('content-type')).toBe(
+			'application/problem+json'
+		)
+		await expect(response.json()).resolves.toEqual({ title: 'Bad request' })
 	})
 
 	test('preserves existing non-empty context response for empty bodies', async () => {
@@ -181,10 +239,96 @@ describe('response helpers', () => {
 			status: 201,
 		})
 
-		expect(finalizeResponse(ctx, response)).toBe(response)
-		expect(finalizeResponse(ctx, response)).toBe(response)
+		const finalized = finalizeResponse(ctx, response)
+
+		expect(finalized).toBe(ctx.res)
+		expect(finalizeResponse(ctx, response)).toBe(finalized)
 		expect(ctx.res.status).toBe(201)
 		expect(ctx.res.headers.get('x-finalized')).toBe('yes')
+		await expect(finalized.text()).resolves.toBe('ok')
+	})
+
+	test('propagates cancellation through finalized response streams', async () => {
+		const app = new Hono()
+		const cancelSpy = vi.fn()
+
+		app.get('/', ctx =>
+			getFinalizedResponse(
+				ctx,
+				new ReadableStream({
+					cancel: cancelSpy,
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('chunk'))
+					},
+				})
+			)
+		)
+
+		const response = await app.request('/')
+		const reader = response.body?.getReader()
+
+		if (!reader) throw new Error('Expected a response body reader')
+		await reader.read()
+		const cancellation = reader.cancel('done')
+
+		await expect(
+			Promise.race([
+				cancellation.then(() => 'cancelled'),
+				delay(25).then(() => 'pending'),
+			])
+		).resolves.toBe('cancelled')
+		expect(cancelSpy).toHaveBeenCalledWith('done')
+	})
+
+	test('cancels Web response streams when the client disconnects', async () => {
+		const socket = new EventEmitter()
+		const cancelSpy = vi.fn()
+		const ctx = await getContext({ incoming: { socket } })
+		const response = await createResponse(
+			ctx,
+			new ReadableStream({ cancel: cancelSpy })
+		)
+		const reader = response.body?.getReader()
+
+		if (!reader) throw new Error('Expected a response body reader')
+		const pendingRead = reader.read()
+		socket.emit('close')
+
+		await expect(pendingRead).resolves.toMatchObject({ done: true })
+		expect(cancelSpy).toHaveBeenCalledOnce()
+	})
+
+	test('cancels prebuilt Response streams when the client disconnects', async () => {
+		const socket = new EventEmitter()
+		const cancelSpy = vi.fn()
+		const ctx = await getContext({ incoming: { socket } })
+		const response = await createResponse(
+			ctx,
+			new Response(new ReadableStream({ cancel: cancelSpy }))
+		)
+		const reader = response.body?.getReader()
+
+		if (!reader) throw new Error('Expected a response body reader')
+		const pendingRead = reader.read()
+		socket.emit('close')
+
+		await expect(pendingRead).resolves.toMatchObject({ done: true })
+		expect(cancelSpy).toHaveBeenCalledOnce()
+	})
+
+	test('destroys Node response streams when the client disconnects', async () => {
+		const socket = new EventEmitter()
+		const stream = new PassThrough()
+		const ctx = await getContext({ incoming: { socket } })
+		const response = await createResponse(ctx, stream)
+		const reader = response.body?.getReader()
+
+		if (!reader) throw new Error('Expected a response body reader')
+		const pendingRead = reader.read()
+		socket.emit('close')
+
+		await expect(pendingRead).resolves.toMatchObject({ done: true })
+		expect(stream.destroyed).toBe(true)
 	})
 
 	test('builds and finalizes responses in one step', async () => {

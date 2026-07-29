@@ -1,10 +1,59 @@
 import { mkdir, writeFile } from 'node:fs/promises'
+import { request } from 'node:http'
 import { join } from 'node:path'
 import { HonoAdapter } from '../../src'
-import { startApp } from './fixtures/minimal-nest-app'
+import {
+	getActiveSseSubscriptions,
+	startApp,
+} from './fixtures/minimal-nest-app'
 
 function delay(ms: number) {
 	return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function getWithHost(url: string, host: string) {
+	return new Promise<{ body: string; statusCode?: number }>(
+		(resolve, reject) => {
+			const clientRequest = request(url, { headers: { host } }, response => {
+				const chunks: Buffer[] = []
+				response.on('data', chunk => chunks.push(Buffer.from(chunk)))
+				response.on('end', () => {
+					resolve({
+						body: Buffer.concat(chunks).toString('utf8'),
+						statusCode: response.statusCode,
+					})
+				})
+			})
+			clientRequest.on('error', reject)
+			clientRequest.end()
+		}
+	)
+}
+
+function abortAfterFirstChunk(url: string) {
+	return new Promise<void>((resolve, reject) => {
+		const clientRequest = request(url, response => {
+			response.once('data', () => {
+				response.destroy()
+				clientRequest.destroy()
+				resolve()
+			})
+		})
+		clientRequest.on('error', reject)
+		clientRequest.end()
+	})
+}
+
+function getWithChunkedBody(url: string, body: string) {
+	return new Promise<{ error?: Error; statusCode?: number }>(resolve => {
+		const clientRequest = request(url, { method: 'GET' }, response => {
+			response.resume()
+			response.on('end', () => resolve({ statusCode: response.statusCode }))
+		})
+		clientRequest.on('error', error => resolve({ error }))
+		clientRequest.write(body)
+		clientRequest.end()
+	})
 }
 
 describe('minimal Nest integration', () => {
@@ -23,6 +72,28 @@ describe('minimal Nest integration', () => {
 				id: '42',
 				query: 'search',
 			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('supports host-scoped controllers and optional Nest routes', async () => {
+		const app = await startApp()
+
+		try {
+			const hostResponse = await getWithHost(
+				`${app.baseUrl}/hosted`,
+				'example.test'
+			)
+			expect(hostResponse.statusCode).toBe(200)
+			expect(JSON.parse(hostResponse.body)).toEqual({ hosted: true })
+
+			await expect(
+				(await fetch(`${app.baseUrl}/optional`)).json()
+			).resolves.toEqual({ id: null })
+			await expect(
+				(await fetch(`${app.baseUrl}/optional/42`)).json()
+			).resolves.toEqual({ id: '42' })
 		} finally {
 			await app.close()
 		}
@@ -65,6 +136,31 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
+	test('supports Nest useBodyParser after disabling default parsers', async () => {
+		const app = await startApp(
+			new HonoAdapter(),
+			{ bodyParser: false },
+			nestApp => {
+				nestApp.useBodyParser('json', { limit: '10kb' })
+			}
+		)
+
+		try {
+			const response = await fetch(`${app.baseUrl}/echo`, {
+				body: JSON.stringify({ custom: true }),
+				headers: { 'content-type': 'application/json' },
+				method: 'POST',
+			})
+
+			expect(response.status).toBe(201)
+			await expect(response.json()).resolves.toEqual({
+				body: { custom: true },
+			})
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('keeps request.body available for guards while preserving the raw request body', async () => {
 		const app = await startApp(new HonoAdapter())
 
@@ -86,7 +182,7 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
-	test('serves PUT, PATCH, DELETE, and OPTIONS routes over HTTP', async () => {
+	test('serves PUT, PATCH, DELETE, HEAD, and OPTIONS routes over HTTP', async () => {
 		const app = await startApp()
 
 		try {
@@ -122,6 +218,12 @@ describe('minimal Nest integration', () => {
 				method: 'OPTIONS',
 			})
 			expect(optionsResponse.status).toBe(204)
+
+			const headResponse = await fetch(`${app.baseUrl}/resource/head`, {
+				method: 'HEAD',
+			})
+			expect(headResponse.status).toBe(200)
+			expect(headResponse.headers.get('x-head-handler')).toBe('yes')
 		} finally {
 			await app.close()
 		}
@@ -161,6 +263,30 @@ describe('minimal Nest integration', () => {
 			await expect(multipartResponse.json()).resolves.toMatchObject({
 				body: { name: 'Ada' },
 			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('parses structured JSON request and response media types', async () => {
+		const app = await startApp()
+
+		try {
+			const requestResponse = await fetch(`${app.baseUrl}/echo`, {
+				body: JSON.stringify({ structured: true }),
+				headers: { 'content-type': 'application/problem+json' },
+				method: 'POST',
+			})
+			expect(requestResponse.status).toBe(201)
+			await expect(requestResponse.json()).resolves.toEqual({
+				body: { structured: true },
+			})
+
+			const response = await fetch(`${app.baseUrl}/returns/problem`)
+			expect(response.headers.get('content-type')).toContain(
+				'application/problem+json'
+			)
+			await expect(response.json()).resolves.toEqual({ detail: 'problem' })
 		} finally {
 			await app.close()
 		}
@@ -225,6 +351,56 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
+	test('enforces route limits when parsing is skipped', async () => {
+		const app = await startApp(
+			new HonoAdapter({
+				requestSizeLimits: [{ maxBytes: 3, path: '/raw-upload' }],
+				skipBodyParserFor: ['/raw-upload'],
+			})
+		)
+
+		try {
+			const response = await fetch(`${app.baseUrl}/raw-upload`, {
+				body: 'hello',
+				headers: { 'content-type': 'application/octet-stream' },
+				method: 'POST',
+			})
+			expect(response.status).toBe(413)
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('rejects chunked GET bodies that exceed the global limit', async () => {
+		const app = await startApp(new HonoAdapter({ bodyLimit: 3 }))
+
+		try {
+			const result = await getWithChunkedBody(
+				`${app.baseUrl}/hello/42`,
+				'hello'
+			)
+			expect(result.statusCode).not.toBe(200)
+			expect(result.error ?? result.statusCode).toBeDefined()
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('awaits Nest middleware and honors route exclusions', async () => {
+		const app = await startApp()
+
+		try {
+			await expect(
+				(await fetch(`${app.baseUrl}/middleware/included`)).json()
+			).resolves.toEqual({ middlewareRan: true })
+			await expect(
+				(await fetch(`${app.baseUrl}/middleware/excluded`)).json()
+			).resolves.toEqual({ middlewareRan: false })
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('returns Nest exception and custom exception filter responses over HTTP', async () => {
 		const app = await startApp()
 
@@ -267,7 +443,11 @@ describe('minimal Nest integration', () => {
 
 			const notFoundResponse = await fetch(`${app.baseUrl}/missing`)
 			expect(notFoundResponse.status).toBe(404)
-			await expect(notFoundResponse.text()).resolves.toBe('Not Found')
+			await expect(notFoundResponse.json()).resolves.toEqual({
+				error: 'Not Found',
+				message: 'Cannot GET /missing',
+				statusCode: 404,
+			})
 		} finally {
 			await app.close()
 		}
@@ -411,15 +591,45 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
+	test('tears down Nest SSE subscriptions after client cancellation', async () => {
+		const app = await startApp()
+
+		try {
+			await abortAfterFirstChunk(`${app.baseUrl}/events/infinite`)
+			await delay(30)
+			expect(getActiveSseSubscriptions()).toBe(0)
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('tears down GET SSE streams used for HEAD fallback', async () => {
+		const app = await startApp()
+
+		try {
+			const response = await fetch(`${app.baseUrl}/events/infinite`, {
+				method: 'HEAD',
+			})
+			expect(response.status).toBe(200)
+			await delay(30)
+			expect(getActiveSseSubscriptions()).toBe(0)
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('serves CORS preflight and static assets over HTTP', async () => {
 		const staticRoot = join(process.cwd(), '.cache', 'integration-static')
-		await mkdir(join(staticRoot, 'assets'), { recursive: true })
-		await writeFile(join(staticRoot, 'assets', 'asset.txt'), 'asset-body')
+		await mkdir(staticRoot, { recursive: true })
+		await writeFile(join(staticRoot, 'asset.txt'), 'asset-body')
 
-		const adapter = new HonoAdapter()
-		const app = await startApp(adapter, {}, nestApp => {
-			nestApp.enableCors({ origin: 'https://example.test' })
-			adapter.useStaticAssets('/assets/*', { root: staticRoot })
+		const app = await startApp(new HonoAdapter(), {}, nestApp => {
+			nestApp.enableCors({
+				allowedHeaders: ['content-type'],
+				methods: ['POST'],
+				origin: 'https://example.test',
+			})
+			nestApp.useStaticAssets(staticRoot, { prefix: '/assets' })
 		})
 
 		try {
@@ -434,10 +644,22 @@ describe('minimal Nest integration', () => {
 			expect(corsResponse.headers.get('access-control-allow-origin')).toBe(
 				'https://example.test'
 			)
+			expect(corsResponse.headers.get('access-control-allow-methods')).toBe(
+				'POST'
+			)
+			expect(corsResponse.headers.get('access-control-allow-headers')).toBe(
+				'content-type'
+			)
 
 			const staticResponse = await fetch(`${app.baseUrl}/assets/asset.txt`)
 			expect(staticResponse.status).toBe(200)
 			await expect(staticResponse.text()).resolves.toBe('asset-body')
+
+			const postStaticResponse = await fetch(
+				`${app.baseUrl}/assets/asset.txt`,
+				{ method: 'POST' }
+			)
+			expect(postStaticResponse.status).toBe(404)
 		} finally {
 			await app.close()
 		}
@@ -451,7 +673,9 @@ describe('minimal Nest integration', () => {
 				headers: { 'x-forwarded-for': '203.0.113.10' },
 			})
 			expect(response.status).toBe(200)
-			await expect(response.json()).resolves.toEqual({})
+			await expect(response.json()).resolves.toMatchObject({
+				ip: expect.stringMatching('127\\.0\\.0\\.1$'),
+			})
 		} finally {
 			await untrustedApp.close()
 		}
@@ -463,7 +687,7 @@ describe('minimal Nest integration', () => {
 				headers: { 'x-forwarded-for': '203.0.113.10, 10.0.0.1' },
 			})
 			expect(response.status).toBe(200)
-			await expect(response.json()).resolves.toEqual({ ip: '203.0.113.10' })
+			await expect(response.json()).resolves.toEqual({ ip: '10.0.0.1' })
 		} finally {
 			await trustedApp.close()
 		}

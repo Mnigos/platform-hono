@@ -10,8 +10,29 @@ describe('path matching helpers', () => {
 
 	test('normalizes trailing slashes and root paths', () => {
 		expect(isPathMatch('/api/auth/', '/api/auth')).toBe(true)
+		expect(isPathMatch('/api/auth///', '/api/auth/')).toBe(true)
 		expect(isPathMatch('/anything', '/')).toBe(true)
 		expect(isPathMatch('/anything', '')).toBe(true)
+	})
+
+	test('canonicalizes unreserved percent-encoding before matching', () => {
+		expect(isPathMatch('/api/%75ploads/avatar', '/api/uploads')).toBe(true)
+		expect(isPathMatch('/api/uploads/avatar', '/api/%75ploads')).toBe(true)
+		expect(isPathMatch('/caf%C3%A9/menu', '/caf%C3%A9')).toBe(true)
+	})
+
+	test('does not decode escaped path separators', () => {
+		expect(isPathMatch('/api%2Fadmin/users', '/api/admin')).toBe(false)
+		expect(isPathMatch('/api%2fadmin/users', '/api%2Fadmin')).toBe(true)
+	})
+
+	test('handles malformed percent-encoding without throwing', () => {
+		expect(isPathMatch('/api/%zz/users', '/api/users')).toBe(false)
+		expect(isPathMatch('/api/%75ploads/%zz', '/api/uploads')).toBe(true)
+	})
+
+	test('does not repeatedly decode percent-encoded percent signs', () => {
+		expect(isPathMatch('/api/%2575ploads', '/api/uploads')).toBe(false)
 	})
 
 	test('selects the longest matching request size limit', () => {
@@ -32,5 +53,17 @@ describe('path matching helpers', () => {
 				{ path: '/api/auth', maxBytes: 10 },
 			])
 		).toBeUndefined()
+	})
+
+	test('selects limits for canonicalized request and configured paths', () => {
+		const limits: RequestSizeLimit[] = [
+			{ path: '/api', maxBytes: 100 },
+			{ path: '/api/%75ploads', maxBytes: 10 },
+		]
+
+		expect(getRequestSizeLimit('/api/uplo%61ds/avatar', limits)).toEqual({
+			path: '/api/%75ploads',
+			maxBytes: 10,
+		})
 	})
 })

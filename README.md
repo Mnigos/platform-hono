@@ -15,6 +15,8 @@ bun add @mnigos/platform-hono hono @hono/node-server @nestjs/common @nestjs/core
 `@nestjs/common`, `@nestjs/core`, `hono`, and `@hono/node-server` are peer
 dependencies.
 
+This package is ESM-only. CommonJS `require()` is not supported.
+
 ## Bootstrap
 
 ```ts
@@ -82,8 +84,8 @@ const app = await NestFactory.create(AppModule, new HonoAdapter(), {
 
 ## Request Size Limits
 
-The adapter applies a default body limit of 1 MiB before parsing JSON, text,
-form, or multipart bodies.
+The adapter applies a default body limit of 1 MiB to every request body,
+including routes where parsing is skipped or disabled.
 
 Configure `bodyLimit` to change the global default, or set `bodyLimit: false`
 to disable the global default:
@@ -126,9 +128,10 @@ const adapter = new HonoAdapter({
 })
 ```
 
-By default, trusted proxy mode considers common proxy headers including
-`cf-connecting-ip`, `x-forwarded-for`, `x-real-ip`, `forwarded`, and
-`true-client-ip`.
+By default, trusted proxy mode accepts only `x-forwarded-for`. Without trusted
+proxy mode, `req.ip` comes from the direct socket connection when available.
+The rightmost forwarded address is used, which is safe for a trusted proxy that
+appends the connecting client address.
 
 To restrict the accepted headers:
 
@@ -137,6 +140,15 @@ const adapter = new HonoAdapter({
 	trustProxy: {
 		headers: ['cf-connecting-ip'],
 	},
+})
+```
+
+For multiple trusted proxies, set `trustedHops` to select the client address
+from right to left:
+
+```ts
+const adapter = new HonoAdapter({
+	trustProxy: { trustedHops: 2 },
 })
 ```
 
@@ -230,7 +242,8 @@ The following Nest response features are intentionally deferred:
 | Nest `@Sse()` server-sent events | Supported |
 | Static assets | Supported |
 | CORS | Supported |
-| oRPC | Supported |
+| Standard and WebDAV HTTP method decorators | Supported |
+| oRPC | Not yet verified |
 | better-auth | Planned |
 | nestjs-better-auth | Planned |
 | Express/Fastify-style manual `@Res()` APIs | Deferred |

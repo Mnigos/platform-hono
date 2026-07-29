@@ -2,7 +2,22 @@ import { Readable } from 'node:stream'
 import { StreamableFile } from '@nestjs/common'
 import type { Context } from 'hono'
 
-const finalizedResponses = new WeakMap<Context, Response>()
+interface FinalizedResponse {
+	response: Response
+	source: Response
+}
+
+interface SocketLike {
+	destroyed?: boolean
+	off(event: 'close', listener: () => void): void
+	once(event: 'close', listener: () => void): void
+}
+
+interface NodeRequestEnvironment {
+	incoming?: { socket?: SocketLike }
+}
+
+const finalizedResponses = new WeakMap<Context, FinalizedResponse>()
 
 export async function normalizeContext(
 	ctx: Context | (() => Promise<Context>)
@@ -16,10 +31,18 @@ export async function normalizeContext(
  * middleware pipeline.
  */
 export function finalizeResponse(ctx: Context, response: Response) {
-	if (ctx.finalized && finalizedResponses.get(ctx) === response) return response
-	finalizedResponses.set(ctx, response)
-	ctx.res = response.clone() as Response
-	return response
+	const finalized = finalizedResponses.get(ctx)
+	if (
+		ctx.finalized &&
+		(finalized?.response === response || finalized?.source === response)
+	) {
+		return finalized.response
+	}
+
+	ctx.res = response
+	const contextResponse = ctx.res
+	finalizedResponses.set(ctx, { response: contextResponse, source: response })
+	return contextResponse
 }
 
 function setStreamableFileHeader(
@@ -43,27 +66,75 @@ function toUint8Array(chunk: unknown) {
 	)
 }
 
-function createByteStream(stream: ReadableStream<unknown>) {
-	return stream.pipeThrough(
-		new TransformStream<unknown, Uint8Array>({
-			transform(chunk, controller) {
-				controller.enqueue(toUint8Array(chunk))
-			},
-		})
-	)
+function getClientSocket(ctx: Context) {
+	return (ctx.env as NodeRequestEnvironment | undefined)?.incoming?.socket
 }
 
-function createReadableStream(readable: Readable) {
-	return createByteStream(Readable.toWeb(readable) as ReadableStream<unknown>)
+function registerClientDisconnect(ctx: Context, listener: () => void) {
+	const socket = getClientSocket(ctx)
+	const signal = ctx.req.raw.signal
+	if (socket?.destroyed || signal.aborted) queueMicrotask(listener)
+	else {
+		socket?.once('close', listener)
+		signal.addEventListener('abort', listener, { once: true })
+	}
+
+	return () => {
+		socket?.off('close', listener)
+		signal.removeEventListener('abort', listener)
+	}
+}
+
+function createByteStream(ctx: Context, stream: ReadableStream<unknown>) {
+	const reader = stream.getReader()
+	let finished = false
+	let cleanup: () => void = () => undefined
+	const cancelSource = async (reason?: unknown) => {
+		if (finished) return
+		finished = true
+		cleanup()
+		await reader.cancel(reason).catch(() => undefined)
+	}
+	cleanup = registerClientDisconnect(ctx, () => {
+		cancelSource(new Error('Client disconnected')).catch(() => undefined)
+	})
+
+	return new ReadableStream<Uint8Array>({
+		async cancel(reason) {
+			await cancelSource(reason)
+		},
+		async pull(controller) {
+			try {
+				const { done, value } = await reader.read()
+				if (finished || done) {
+					finished = true
+					cleanup()
+					controller.close()
+					return
+				}
+				controller.enqueue(toUint8Array(value))
+			} catch (error) {
+				await cancelSource(error)
+				controller.error(error)
+			}
+		},
+	})
+}
+
+function createReadableStream(ctx: Context, readable: Readable) {
+	return createByteStream(
+		ctx,
+		Readable.toWeb(readable) as ReadableStream<unknown>
+	)
 }
 
 function createStreamResponse(ctx: Context, stream: ReadableStream<unknown>) {
 	const responseContentType = ctx.res.headers.get('Content-Type')
-	if (!responseContentType || responseContentType.startsWith('text/plain')) {
+	if (!responseContentType) {
 		ctx.res.headers.set('Content-Type', 'application/octet-stream')
 	}
 
-	return ctx.body(createByteStream(stream))
+	return ctx.body(createByteStream(ctx, stream))
 }
 
 function createNodeStreamResponse(ctx: Context, readable: Readable) {
@@ -75,12 +146,55 @@ function createNodeStreamResponse(ctx: Context, readable: Readable) {
 
 function createStreamableFileResponse(ctx: Context, file: StreamableFile) {
 	const { disposition, length, type } = file.getHeaders()
+	const readable = file.getStream()
+	const socket = getClientSocket(ctx)
 
 	setStreamableFileHeader(ctx.res.headers, 'Content-Type', type)
 	setStreamableFileHeader(ctx.res.headers, 'Content-Disposition', disposition)
 	setStreamableFileHeader(ctx.res.headers, 'Content-Length', length)
 
-	return ctx.body(createReadableStream(file.getStream()))
+	readable.once('error', error => {
+		try {
+			file.errorHandler(error, {
+				get destroyed() {
+					return socket?.destroyed ?? ctx.req.raw.signal.aborted
+				},
+				end() {
+					readable.destroy()
+				},
+				get headersSent() {
+					return ctx.finalized
+				},
+				send(body) {
+					ctx.res = ctx.body(body)
+				},
+				get statusCode() {
+					return ctx.res.status
+				},
+				set statusCode(statusCode) {
+					ctx.status(statusCode as Parameters<Context['status']>[0])
+				},
+			})
+		} finally {
+			file.errorLogger(error)
+		}
+	})
+
+	return ctx.body(createReadableStream(ctx, readable))
+}
+
+export function isJsonContentType(contentType: string | null) {
+	const mediaType = contentType?.split(';', 1)[0]?.trim().toLowerCase()
+	return mediaType === 'application/json' || mediaType?.endsWith('+json')
+}
+
+function createFetchResponse(ctx: Context, response: Response) {
+	if (!response.body) return response
+	return new Response(createByteStream(ctx, response.body), {
+		headers: response.headers,
+		status: response.status,
+		statusText: response.statusText,
+	})
 }
 
 /**
@@ -88,7 +202,7 @@ function createStreamableFileResponse(ctx: Context, file: StreamableFile) {
  * responses and inferring JSON/binary content types when Nest has not set one.
  */
 export function createResponse(ctx: Context, body?: unknown) {
-	if (body instanceof Response) return body
+	if (body instanceof Response) return createFetchResponse(ctx, body)
 
 	if (body instanceof StreamableFile) {
 		return createStreamableFileResponse(ctx, body)
@@ -103,7 +217,7 @@ export function createResponse(ctx: Context, body?: unknown) {
 	}
 
 	if (body === undefined && finalizedResponses.has(ctx)) {
-		return finalizedResponses.get(ctx) as Response
+		return (finalizedResponses.get(ctx) as FinalizedResponse).response
 	}
 
 	if (body === undefined && ctx.res && ctx.res.body !== null) {
@@ -122,10 +236,7 @@ export function createResponse(ctx: Context, body?: unknown) {
 			ctx.res.headers.set('Content-Type', responseContentType)
 	}
 
-	if (
-		responseContentType?.startsWith('application/json') &&
-		typeof body === 'object'
-	) {
+	if (isJsonContentType(responseContentType) && typeof body === 'object') {
 		return ctx.newResponse(JSON.stringify(body))
 	}
 	if (body === undefined) return ctx.newResponse(null)

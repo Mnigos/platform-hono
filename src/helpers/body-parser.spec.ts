@@ -1,54 +1,58 @@
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common'
 import type { Context } from 'hono'
 import type { HonoAdapterOptions, RequestSizeLimit } from '../options'
-import { createBodyLimit, parseRequestBodyWithLimits } from './body-parser'
+import {
+	createBodyLimit,
+	enforceRequestBodyLimit,
+	parseRequestBodyWithLimits,
+} from './body-parser'
 
 interface FakeRequest extends Record<string, unknown> {
 	body?: unknown
 	header: (name: string) => string | undefined
 	method: string
-	parseBody: () => Promise<unknown>
 	path: string
 	raw: Request
 	rawBody?: Buffer
-	text: () => Promise<string>
 }
 
 function createContext(options: {
+	bodyBytes?: Uint8Array
 	bodyText?: string
+	environment?: object
 	headers?: Record<string, string>
-	parsedBody?: unknown
-	parseError?: Error
 	path?: string
+	signal?: AbortSignal
 }) {
 	const headers = new Headers(options.headers)
+	const bodyBytes =
+		options.bodyBytes ??
+		(options.bodyText === undefined
+			? undefined
+			: new TextEncoder().encode(options.bodyText))
 	const body =
-		options.bodyText === undefined
+		bodyBytes === undefined
 			? undefined
 			: new ReadableStream({
 					start(controller) {
-						controller.enqueue(new TextEncoder().encode(options.bodyText))
+						controller.enqueue(bodyBytes)
 						controller.close()
 					},
 				})
 	const request: FakeRequest = {
 		header: name => headers.get(name) ?? undefined,
-		method: options.bodyText === undefined ? 'GET' : 'POST',
-		parseBody: () =>
-			options.parseError
-				? Promise.reject(options.parseError)
-				: Promise.resolve(options.parsedBody ?? {}),
+		method: bodyBytes === undefined ? 'GET' : 'POST',
 		path: options.path ?? '/parse',
 		raw: new Request(`http://localhost${options.path ?? '/parse'}`, {
 			body,
 			duplex: body ? 'half' : undefined,
 			headers,
-			method: options.bodyText === undefined ? 'GET' : 'POST',
+			method: bodyBytes === undefined ? 'GET' : 'POST',
+			signal: options.signal,
 		}),
-		text: async () => options.bodyText ?? '',
 	}
 
-	return { req: request } as unknown as Context
+	return { env: options.environment, req: request } as unknown as Context
 }
 
 async function parse(
@@ -78,6 +82,37 @@ describe('body parser helpers', () => {
 		await expect(req.raw.text()).resolves.toBe(bodyText)
 	})
 
+	test('preserves exact raw JSON bytes before UTF-8 decoding', async () => {
+		const bodyBytes = new Uint8Array([0x22, 0x80, 0x22])
+		const req = await parse(
+			createContext({
+				bodyBytes,
+				headers: { 'content-type': 'application/json' },
+			}),
+			{},
+			true
+		)
+
+		expect(req.body).toBe('\uFFFD')
+		expect(req.rawBody).toEqual(Buffer.from(bodyBytes))
+		expect(Buffer.from(await req.raw.arrayBuffer())).toEqual(
+			Buffer.from(bodyBytes)
+		)
+	})
+
+	test('parses application structured JSON media types', async () => {
+		const req = await parse(
+			createContext({
+				bodyText: '{"ok":true}',
+				headers: {
+					'content-type': 'Application/Problem+JSON; charset=utf-8',
+				},
+			})
+		)
+
+		expect(req.body).toEqual({ ok: true })
+	})
+
 	test('parses empty JSON bodies as empty objects', async () => {
 		const req = await parse(
 			createContext({
@@ -103,29 +138,16 @@ describe('body parser helpers', () => {
 		expect(req.rawBody).toEqual(Buffer.from('hello'))
 	})
 
-	test('parses form and multipart request bodies', async () => {
-		const formBody = { name: 'Ada' }
+	test('parses URL-encoded request bodies', async () => {
 		const req = await parse(
 			createContext({
 				bodyText: 'name=Ada',
 				headers: { 'content-type': 'application/x-www-form-urlencoded' },
-				parsedBody: formBody,
 			})
 		)
 
-		expect(req.body).toBe(formBody)
+		expect(req.body).toEqual({ name: 'Ada' })
 		await expect(req.raw.text()).resolves.toBe('name=Ada')
-
-		const multipartReq = await parse(
-			createContext({
-				bodyText: '--test',
-				headers: { 'content-type': 'multipart/form-data; boundary=test' },
-				parsedBody: { file: new Blob(['abc']) },
-			})
-		)
-
-		expect(multipartReq.body).toMatchObject({ file: expect.any(Blob) })
-		await expect(multipartReq.raw.text()).resolves.toBe('--test')
 	})
 
 	test('ignores unsupported content types', async () => {
@@ -137,6 +159,30 @@ describe('body parser helpers', () => {
 		)
 
 		expect(req.body).toBeUndefined()
+	})
+
+	test('enforces body limits for unsupported content types', async () => {
+		await expect(
+			parse(
+				createContext({
+					bodyText: '<xml />',
+					headers: { 'content-type': 'application/xml' },
+				}),
+				{ bodyLimit: 3 }
+			)
+		).rejects.toBeInstanceOf(PayloadTooLargeException)
+	})
+
+	test('exposes body-limit enforcement for skipped parsing', async () => {
+		await expect(
+			enforceRequestBodyLimit(
+				createContext({
+					bodyText: 'hello',
+					headers: { 'content-type': 'application/octet-stream' },
+				}),
+				{ bodyLimit: 3 }
+			)
+		).rejects.toBeInstanceOf(PayloadTooLargeException)
 	})
 
 	test('rejects malformed JSON and form bodies as bad requests', async () => {
@@ -153,7 +199,6 @@ describe('body parser helpers', () => {
 			parse(
 				createContext({
 					headers: { 'content-type': 'multipart/form-data; boundary=test' },
-					parseError: new Error('bad form'),
 				})
 			)
 		).rejects.toBeInstanceOf(BadRequestException)
@@ -175,6 +220,19 @@ describe('body parser helpers', () => {
 
 		await expect(promise).rejects.toBeInstanceOf(PayloadTooLargeException)
 		await expect(promise).rejects.toMatchObject({ message: 'Too much' })
+	})
+
+	test('destroys bodyless Node requests with oversized content lengths', async () => {
+		const destroy = vi.fn()
+		const ctx = createContext({
+			environment: { incoming: { destroy } },
+			headers: { 'content-length': '1000000000' },
+		})
+
+		await expect(
+			enforceRequestBodyLimit(ctx, { bodyLimit: 3 })
+		).rejects.toBeInstanceOf(PayloadTooLargeException)
+		expect(destroy).toHaveBeenCalledOnce()
 	})
 
 	test('ignores invalid content length values before body limit enforcement', async () => {
@@ -206,6 +264,18 @@ describe('body parser helpers', () => {
 		).rejects.toBeInstanceOf(PayloadTooLargeException)
 	})
 
+	test('treats a zero-byte body limit as an active limit', async () => {
+		await expect(
+			parse(
+				createContext({
+					bodyText: 'x',
+					headers: { 'content-type': 'text/plain' },
+				}),
+				{ bodyLimit: 0 }
+			)
+		).rejects.toBeInstanceOf(PayloadTooLargeException)
+	})
+
 	test('uses default payload-too-large messages when no custom message is provided', async () => {
 		await expect(
 			parse(
@@ -223,54 +293,19 @@ describe('body parser helpers', () => {
 		).rejects.toMatchObject({ message: 'Payload too large' })
 	})
 
-	test('rejects oversized parsed bodies when global limit is disabled', async () => {
-		await expect(
-			parse(
-				createContext({
-					headers: { 'content-type': 'multipart/form-data; boundary=test' },
-					parsedBody: { file: new Blob(['abc']), name: 'long-value' },
-				}),
-				{ bodyLimit: false },
-				false,
-				{
-					errorMessage: 'Parsed payload too large',
-					maxBytes: 3,
-					path: '/parse',
-				}
-			)
-		).rejects.toMatchObject({ message: 'Parsed payload too large' })
-	})
+	test('preserves the source abort signal when rebuilding a request', async () => {
+		const controller = new AbortController()
+		const req = await parse(
+			createContext({
+				bodyText: 'hello',
+				headers: { 'content-type': 'text/plain' },
+				signal: controller.signal,
+			})
+		)
 
-	test('uses default message for oversized parsed bodies without custom message', async () => {
-		await expect(
-			parse(
-				createContext({
-					headers: { 'content-type': 'multipart/form-data; boundary=test' },
-					parsedBody: { name: 'long-value' },
-				}),
-				{ bodyLimit: false },
-				false,
-				{ maxBytes: 3, path: '/parse' }
-			)
-		).rejects.toMatchObject({ message: 'Payload too large' })
-	})
-
-	test('counts nested arrays and primitive values for parsed body size', async () => {
-		await expect(
-			parse(
-				createContext({
-					headers: { 'content-type': 'application/x-www-form-urlencoded' },
-					parsedBody: { values: ['abcd', 123, true, null] },
-				}),
-				{ bodyLimit: false },
-				false,
-				{
-					errorMessage: 'Nested payload too large',
-					maxBytes: 3,
-					path: '/parse',
-				}
-			)
-		).rejects.toMatchObject({ message: 'Nested payload too large' })
+		expect(req.raw.signal.aborted).toBe(false)
+		controller.abort()
+		expect(req.raw.signal.aborted).toBe(true)
 	})
 
 	test('allows route-specific limits to override the default global limit', async () => {
