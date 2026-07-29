@@ -8,19 +8,6 @@ import {
 } from '../options.js'
 import { getNestHonoRequest } from './request.js'
 
-/**
- * Applies the effective byte limit before parsing.
- */
-export async function parseRequestBodyWithLimits(
-	ctx: Context,
-	options: HonoAdapterOptions,
-	rawBody: boolean,
-	requestSizeLimit?: RequestSizeLimit
-) {
-	await enforceRequestBodyLimit(ctx, options, requestSizeLimit)
-	await parseRequestBody(ctx, rawBody)
-}
-
 export async function parseRequestBody(
 	ctx: Context,
 	rawBody: boolean,

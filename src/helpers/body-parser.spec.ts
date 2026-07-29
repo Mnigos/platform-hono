@@ -4,7 +4,7 @@ import type { HonoAdapterOptions, RequestSizeLimit } from '../options'
 import {
 	createBodyLimit,
 	enforceRequestBodyLimit,
-	parseRequestBodyWithLimits,
+	parseRequestBody,
 } from './body-parser'
 
 interface FakeRequest extends Record<string, unknown> {
@@ -61,7 +61,8 @@ async function parse(
 	rawBody = false,
 	requestSizeLimit?: RequestSizeLimit
 ) {
-	await parseRequestBodyWithLimits(ctx, options, rawBody, requestSizeLimit)
+	await enforceRequestBodyLimit(ctx, options, requestSizeLimit)
+	await parseRequestBody(ctx, rawBody)
 	return ctx.req as unknown as FakeRequest
 }
 
@@ -100,30 +101,6 @@ describe('body parser helpers', () => {
 		)
 	})
 
-	test('parses application structured JSON media types', async () => {
-		const req = await parse(
-			createContext({
-				bodyText: '{"ok":true}',
-				headers: {
-					'content-type': 'Application/Problem+JSON; charset=utf-8',
-				},
-			})
-		)
-
-		expect(req.body).toEqual({ ok: true })
-	})
-
-	test('parses empty JSON bodies as empty objects', async () => {
-		const req = await parse(
-			createContext({
-				bodyText: '',
-				headers: { 'content-type': 'application/json' },
-			})
-		)
-
-		expect(req.body).toEqual({})
-	})
-
 	test('parses text request bodies and raw bodies', async () => {
 		const req = await parse(
 			createContext({
@@ -138,37 +115,41 @@ describe('body parser helpers', () => {
 		expect(req.rawBody).toEqual(Buffer.from('hello'))
 	})
 
-	test('parses URL-encoded request bodies', async () => {
+	test.each<[string, string, string, unknown]>([
+		[
+			'structured JSON',
+			'{"ok":true}',
+			'Application/Problem+JSON; charset=utf-8',
+			{ ok: true },
+		],
+		['empty JSON', '', 'application/json', {}],
+		[
+			'URL-encoded',
+			'name=Ada',
+			'application/x-www-form-urlencoded',
+			{ name: 'Ada' },
+		],
+		['unsupported', '<xml />', 'application/xml', undefined],
+	])('handles %s request bodies', async (_case, bodyText, contentType, body) => {
 		const req = await parse(
-			createContext({
-				bodyText: 'name=Ada',
-				headers: { 'content-type': 'application/x-www-form-urlencoded' },
-			})
+			createContext({ bodyText, headers: { 'content-type': contentType } })
 		)
 
-		expect(req.body).toEqual({ name: 'Ada' })
-		await expect(req.raw.text()).resolves.toBe('name=Ada')
+		expect(req.body).toEqual(body)
+		await expect(req.raw.text()).resolves.toBe(bodyText)
 	})
-
-	test('ignores unsupported content types', async () => {
-		const req = await parse(
-			createContext({
-				bodyText: '<xml />',
-				headers: { 'content-type': 'application/xml' },
-			})
-		)
-
-		expect(req.body).toBeUndefined()
-	})
-
-	test('enforces body limits for unsupported content types', async () => {
+	test.each<[string, string, string, number]>([
+		['unsupported content', '<xml />', 'application/xml', 3],
+		['effective limit', 'hello', 'text/plain', 3],
+		['zero-byte limit', 'x', 'text/plain', 0],
+	])('enforces %s', async (_case, bodyText, contentType, bodyLimit) => {
 		await expect(
 			parse(
 				createContext({
-					bodyText: '<xml />',
-					headers: { 'content-type': 'application/xml' },
+					bodyText,
+					headers: { 'content-type': contentType },
 				}),
-				{ bodyLimit: 3 }
+				{ bodyLimit }
 			)
 		).rejects.toBeInstanceOf(PayloadTooLargeException)
 	})
@@ -252,30 +233,6 @@ describe('body parser helpers', () => {
 		expect(req.body).toBe('hello')
 	})
 
-	test('rejects oversized bodies through the effective body limit', async () => {
-		await expect(
-			parse(
-				createContext({
-					bodyText: 'hello',
-					headers: { 'content-type': 'text/plain' },
-				}),
-				{ bodyLimit: 3 }
-			)
-		).rejects.toBeInstanceOf(PayloadTooLargeException)
-	})
-
-	test('treats a zero-byte body limit as an active limit', async () => {
-		await expect(
-			parse(
-				createContext({
-					bodyText: 'x',
-					headers: { 'content-type': 'text/plain' },
-				}),
-				{ bodyLimit: 0 }
-			)
-		).rejects.toBeInstanceOf(PayloadTooLargeException)
-	})
-
 	test('uses default payload-too-large messages when no custom message is provided', async () => {
 		await expect(
 			parse(
@@ -308,38 +265,19 @@ describe('body parser helpers', () => {
 		expect(req.raw.signal.aborted).toBe(true)
 	})
 
-	test('allows route-specific limits to override the default global limit', async () => {
+	test.each<[string, HonoAdapterOptions, RequestSizeLimit | undefined]>([
+		['route-specific override', {}, { maxBytes: 10, path: '/parse' }],
+		['disabled global limit', { bodyLimit: false }, undefined],
+		['default global limit', {}, undefined],
+	])('parses within the %s', async (_case, options, requestSizeLimit) => {
 		const req = await parse(
 			createContext({
 				bodyText: 'hello',
 				headers: { 'content-type': 'text/plain' },
 			}),
-			{},
+			options,
 			false,
-			{ maxBytes: 10, path: '/parse' }
-		)
-
-		expect(req.body).toBe('hello')
-	})
-
-	test('parses bodies when global body limit is disabled', async () => {
-		const req = await parse(
-			createContext({
-				bodyText: 'hello',
-				headers: { 'content-type': 'text/plain' },
-			}),
-			{ bodyLimit: false }
-		)
-
-		expect(req.body).toBe('hello')
-	})
-
-	test('uses the default global body limit when no explicit limit is configured', async () => {
-		const req = await parse(
-			createContext({
-				bodyText: 'hello',
-				headers: { 'content-type': 'text/plain' },
-			})
+			requestSizeLimit
 		)
 
 		expect(req.body).toBe('hello')

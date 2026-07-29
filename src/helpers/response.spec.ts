@@ -6,7 +6,6 @@ import {
 	createResponse,
 	finalizeResponse,
 	getFinalizedResponse,
-	normalizeContext,
 } from './response'
 
 async function getContext(environment: object = {}) {
@@ -28,14 +27,19 @@ function delay(ms: number) {
 	return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+async function disconnectResponseStream(body: unknown) {
+	const socket = new EventEmitter()
+	const ctx = await getContext({ incoming: { socket } })
+	const response = await createResponse(ctx, body)
+	const reader = response.body?.getReader()
+
+	if (!reader) throw new Error('Expected a response body reader')
+	const pendingRead = reader.read()
+	socket.emit('close')
+	await expect(pendingRead).resolves.toMatchObject({ done: true })
+}
+
 describe('response helpers', () => {
-	test('normalizes direct and lazy contexts', async () => {
-		const ctx = await getContext()
-
-		expect(await normalizeContext(ctx)).toBe(ctx)
-		expect(await normalizeContext(async () => ctx)).toBe(ctx)
-	})
-
 	test('creates JSON responses for object bodies', async () => {
 		const ctx = await getContext()
 
@@ -281,53 +285,26 @@ describe('response helpers', () => {
 	})
 
 	test('cancels Web response streams when the client disconnects', async () => {
-		const socket = new EventEmitter()
 		const cancelSpy = vi.fn()
-		const ctx = await getContext({ incoming: { socket } })
-		const response = await createResponse(
-			ctx,
-			new ReadableStream({ cancel: cancelSpy })
-		)
-		const reader = response.body?.getReader()
 
-		if (!reader) throw new Error('Expected a response body reader')
-		const pendingRead = reader.read()
-		socket.emit('close')
-
-		await expect(pendingRead).resolves.toMatchObject({ done: true })
+		await disconnectResponseStream(new ReadableStream({ cancel: cancelSpy }))
 		expect(cancelSpy).toHaveBeenCalledOnce()
 	})
 
 	test('cancels prebuilt Response streams when the client disconnects', async () => {
-		const socket = new EventEmitter()
 		const cancelSpy = vi.fn()
-		const ctx = await getContext({ incoming: { socket } })
-		const response = await createResponse(
-			ctx,
+
+		await disconnectResponseStream(
 			new Response(new ReadableStream({ cancel: cancelSpy }))
 		)
-		const reader = response.body?.getReader()
 
-		if (!reader) throw new Error('Expected a response body reader')
-		const pendingRead = reader.read()
-		socket.emit('close')
-
-		await expect(pendingRead).resolves.toMatchObject({ done: true })
 		expect(cancelSpy).toHaveBeenCalledOnce()
 	})
 
 	test('destroys Node response streams when the client disconnects', async () => {
-		const socket = new EventEmitter()
 		const stream = new PassThrough()
-		const ctx = await getContext({ incoming: { socket } })
-		const response = await createResponse(ctx, stream)
-		const reader = response.body?.getReader()
 
-		if (!reader) throw new Error('Expected a response body reader')
-		const pendingRead = reader.read()
-		socket.emit('close')
-
-		await expect(pendingRead).resolves.toMatchObject({ done: true })
+		await disconnectResponseStream(stream)
 		expect(stream.destroyed).toBe(true)
 	})
 

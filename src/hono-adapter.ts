@@ -47,7 +47,6 @@ import {
 	finalizeResponse,
 	getFinalizedResponse,
 	isJsonContentType,
-	normalizeContext,
 } from './helpers/response.js'
 import type { HonoAdapterOptions } from './options.js'
 
@@ -56,6 +55,11 @@ type RouteHandler = (
 	res: Context,
 	next: () => Promise<void>
 ) => Response | undefined | Promise<Response | undefined>
+
+type RouteArguments = [
+	pathOrHandler: string | RouteHandler,
+	handler?: RouteHandler,
+]
 
 type HonoRouteMethod =
 	| 'all'
@@ -732,90 +736,72 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		}
 	}
 
-	override all(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('all', pathOrHandler, handler)
+	override all(...args: RouteArguments) {
+		this.registerRoute('all', ...args)
 	}
 
-	override get(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('get', pathOrHandler, handler)
+	override get(...args: RouteArguments) {
+		this.registerRoute('get', ...args)
 	}
 
-	override post(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('post', pathOrHandler, handler)
+	override post(...args: RouteArguments) {
+		this.registerRoute('post', ...args)
 	}
 
-	override put(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('put', pathOrHandler, handler)
+	override put(...args: RouteArguments) {
+		this.registerRoute('put', ...args)
 	}
 
-	override delete(
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	) {
-		this.registerRoute('delete', pathOrHandler, handler)
+	override delete(...args: RouteArguments) {
+		this.registerRoute('delete', ...args)
 	}
 
-	override use(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('use', pathOrHandler, handler)
+	override use(...args: RouteArguments) {
+		this.registerRoute('use', ...args)
 	}
 
-	override patch(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('patch', pathOrHandler, handler)
+	override patch(...args: RouteArguments) {
+		this.registerRoute('patch', ...args)
 	}
 
-	override options(
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	) {
-		this.registerRoute('options', pathOrHandler, handler)
+	override options(...args: RouteArguments) {
+		this.registerRoute('options', ...args)
 	}
 
-	override head(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('head', pathOrHandler, handler)
+	override head(...args: RouteArguments) {
+		this.registerRoute('head', ...args)
 	}
 
-	override search(
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	) {
-		this.registerRoute('search', pathOrHandler, handler)
+	override search(...args: RouteArguments) {
+		this.registerRoute('search', ...args)
 	}
 
-	override propfind(
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	) {
-		this.registerRoute('propfind', pathOrHandler, handler)
+	override propfind(...args: RouteArguments) {
+		this.registerRoute('propfind', ...args)
 	}
 
-	override proppatch(
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	) {
-		this.registerRoute('proppatch', pathOrHandler, handler)
+	override proppatch(...args: RouteArguments) {
+		this.registerRoute('proppatch', ...args)
 	}
 
-	override mkcol(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('mkcol', pathOrHandler, handler)
+	override mkcol(...args: RouteArguments) {
+		this.registerRoute('mkcol', ...args)
 	}
 
-	override copy(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('copy', pathOrHandler, handler)
+	override copy(...args: RouteArguments) {
+		this.registerRoute('copy', ...args)
 	}
 
-	override move(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('move', pathOrHandler, handler)
+	override move(...args: RouteArguments) {
+		this.registerRoute('move', ...args)
 	}
 
-	override lock(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('lock', pathOrHandler, handler)
+	override lock(...args: RouteArguments) {
+		this.registerRoute('lock', ...args)
 	}
 
-	override unlock(
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	) {
-		this.registerRoute('unlock', pathOrHandler, handler)
+	override unlock(...args: RouteArguments) {
+		this.registerRoute('unlock', ...args)
 	}
 
 	reply(ctx: Context, body: unknown, statusCode?: number) {
@@ -857,14 +843,10 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		throw new Error('Method not implemented.')
 	}
 
-	async redirect(ctx: Context, statusCode: number, url: string) {
-		const normalizedCtx = await normalizeContext(ctx)
+	redirect(ctx: Context, statusCode: number, url: string) {
 		finalizeResponse(
-			normalizedCtx,
-			normalizedCtx.redirect(
-				url,
-				statusCode as Parameters<Context['redirect']>[1]
-			)
+			ctx,
+			ctx.redirect(url, statusCode as Parameters<Context['redirect']>[1])
 		)
 	}
 

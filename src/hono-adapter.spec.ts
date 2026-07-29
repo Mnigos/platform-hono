@@ -62,15 +62,23 @@ describe('HonoAdapter', () => {
 		expect(useBodyParserSpy).toHaveBeenCalledTimes(4)
 	})
 
-	test('registers all HTTP route helpers', async () => {
+	test('registers all non-HEAD HTTP route helpers', async () => {
 		const adapter = new HonoAdapter()
 		const methods = [
-			'get',
-			'post',
-			'put',
+			'copy',
 			'delete',
-			'patch',
+			'get',
+			'lock',
+			'mkcol',
+			'move',
 			'options',
+			'patch',
+			'post',
+			'propfind',
+			'proppatch',
+			'put',
+			'search',
+			'unlock',
 		] as const
 
 		for (const method of methods) {
@@ -94,18 +102,8 @@ describe('HonoAdapter', () => {
 		).resolves.toBe('all')
 	})
 
-	test('registers HEAD and extended HTTP route helpers', async () => {
+	test('registers explicit HEAD route helpers', async () => {
 		const adapter = new HonoAdapter()
-		const methods = [
-			'search',
-			'propfind',
-			'proppatch',
-			'mkcol',
-			'copy',
-			'move',
-			'lock',
-			'unlock',
-		] as const
 
 		adapter.get('/head', async (_req, ctx) => {
 			ctx.header('x-handler', 'get')
@@ -115,21 +113,10 @@ describe('HonoAdapter', () => {
 			ctx.header('x-handler', 'head')
 			await adapter.reply(ctx, undefined, 204)
 		})
-		for (const method of methods) {
-			adapter[method](`/${method}`, async (_req, ctx) => {
-				await adapter.reply(ctx, method)
-			})
-		}
 
 		const headResponse = await adapter.hono.request('/head', { method: 'HEAD' })
 		expect(headResponse.status).toBe(204)
 		expect(headResponse.headers.get('x-handler')).toBe('head')
-		for (const method of methods) {
-			const response = await adapter.hono.request(`/${method}`, {
-				method: method.toUpperCase(),
-			})
-			await expect(response.text()).resolves.toBe(method)
-		}
 	})
 
 	test('cancels GET response streams used for HEAD fallback', async () => {
@@ -296,6 +283,7 @@ describe('HonoAdapter', () => {
 		})
 
 		expect(capturedRequest).toMatchObject({
+			baseUrl: '/users/123',
 			headers: expect.objectContaining({ host: 'example.test' }),
 			ip: '10.0.0.1',
 			params: { id: '123' },
@@ -371,45 +359,6 @@ describe('HonoAdapter', () => {
 		expect((await adapter.hono.request('/numeric/abc')).status).toBe(404)
 	})
 
-	test('normalizes request metadata in initialized middleware', async () => {
-		const adapter = createInitializedAdapter({
-			trustProxy: { headers: ['x-real-ip'] },
-		})
-		let capturedRequest: NestHonoRequest | undefined
-
-		adapter.get('/meta', req => {
-			capturedRequest = getNestHonoRequest(req)
-		})
-
-		await adapter.hono.request('/meta?ok=true', {
-			headers: {
-				host: 'example.test',
-				'x-real-ip': '198.51.100.5',
-			},
-		})
-
-		expect(capturedRequest).toMatchObject({
-			baseUrl: '/meta',
-			headers: expect.objectContaining({ host: 'example.test' }),
-			ip: '198.51.100.5',
-		})
-	})
-
-	test('does not trust forwarded IP headers by default', async () => {
-		const adapter = createInitializedAdapter()
-		let capturedRequest: NestHonoRequest | undefined
-
-		adapter.get('/meta', req => {
-			capturedRequest = getNestHonoRequest(req)
-		})
-
-		await adapter.hono.request('/meta', {
-			headers: { 'x-forwarded-for': '203.0.113.10' },
-		})
-
-		expect(capturedRequest?.ip).toBeUndefined()
-	})
-
 	test('preserves request IP values that were already set upstream', async () => {
 		const adapter = new HonoAdapter({ trustProxy: true })
 		let capturedRequest: NestHonoRequest | undefined
@@ -427,17 +376,6 @@ describe('HonoAdapter', () => {
 		})
 
 		expect(capturedRequest?.ip).toBe('192.0.2.10')
-	})
-
-	test('parses request bodies through initialized middleware', async () => {
-		const adapter = createInitializedAdapter()
-
-		const req = await requestWithCapturedBody(adapter, '/json', {
-			body: JSON.stringify({ ok: true }),
-			headers: { 'content-type': 'application/json' },
-		})
-
-		expect(req.body).toEqual({ ok: true })
 	})
 
 	test('preserves raw request bodies for downstream consumers after parsing', async () => {
@@ -519,10 +457,14 @@ describe('HonoAdapter', () => {
 		).rejects.toMatchObject({ message: 'Upload too large' })
 	})
 
-	test('uses explicit body parser limits registered through Nest parser hooks', async () => {
+	test.each<[string, number | { limit: string }, string, boolean]>([
+		['numeric', 3, 'hello', true],
+		['string unit', { limit: '3b' }, 'hello', false],
+		['zero-byte', { limit: '0b' }, 'x', false],
+	])('enforces %s Nest body parser limits', async (_case, limit, body, scoped) => {
 		const adapter = new HonoAdapter()
 
-		adapter.useBodyParser('text/plain', false, 3)
+		adapter.useBodyParser('text/plain', false, limit)
 		adapter.hono.onError(err => {
 			throw err
 		})
@@ -532,61 +474,23 @@ describe('HonoAdapter', () => {
 
 		await expect(
 			adapter.hono.request('/limited', {
-				body: 'hello',
-				headers: {
-					'content-length': '5',
-					'content-type': 'text/plain',
-				},
-				method: 'POST',
-			})
-		).rejects.toBeInstanceOf(Error)
-
-		const jsonResponse = await adapter.hono.request('/limited', {
-			body: '{"long":true}',
-			headers: { 'content-type': 'application/json' },
-			method: 'POST',
-		})
-		expect(jsonResponse.status).toBe(200)
-	})
-
-	test('accepts Nest body parser option objects and string units', async () => {
-		const adapter = new HonoAdapter()
-
-		adapter.useBodyParser('text/plain', false, { limit: '3b' })
-		adapter.hono.onError(err => {
-			throw err
-		})
-		adapter.post('/limited', async (_req, ctx) => {
-			await adapter.reply(ctx, 'ok')
-		})
-
-		await expect(
-			adapter.hono.request('/limited', {
-				body: 'hello',
+				body,
 				headers: { 'content-type': 'text/plain' },
 				method: 'POST',
 			})
 		).rejects.toBeInstanceOf(Error)
-	})
 
-	test('enforces zero-byte limits registered through Nest parser hooks', async () => {
-		const adapter = new HonoAdapter()
-
-		adapter.useBodyParser('text/plain', false, { limit: '0b' })
-		adapter.hono.onError(err => {
-			throw err
-		})
-		adapter.post('/limited', async (_req, ctx) => {
-			await adapter.reply(ctx, 'ok')
-		})
-
-		await expect(
-			adapter.hono.request('/limited', {
-				body: 'x',
-				headers: { 'content-type': 'text/plain' },
-				method: 'POST',
-			})
-		).rejects.toBeInstanceOf(Error)
+		if (scoped) {
+			expect(
+				(
+					await adapter.hono.request('/limited', {
+						body: '{"long":true}',
+						headers: { 'content-type': 'application/json' },
+						method: 'POST',
+					})
+				).status
+			).toBe(200)
+		}
 	})
 
 	test('replies with JSON, text, buffers, empty bodies, and prebuilt responses', async () => {

@@ -19,13 +19,6 @@ interface NodeRequestEnvironment {
 
 const finalizedResponses = new WeakMap<Context, FinalizedResponse>()
 
-export async function normalizeContext(
-	ctx: Context | (() => Promise<Context>)
-) {
-	if (typeof ctx === 'function') return await ctx()
-	return ctx
-}
-
 /**
  * Stores the Fetch response on the Hono context and returns it for Hono's
  * middleware pipeline.

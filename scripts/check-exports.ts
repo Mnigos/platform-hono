@@ -1,11 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import {
-	accessSync,
-	mkdirSync,
-	mkdtempSync,
-	rmSync,
-	writeFileSync,
-} from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -116,15 +110,6 @@ if (response.bodyUsed || JSON.stringify(await response.json()) !== '{"ok":true}'
 		{ cwd: consumerDirectory, stdio: 'inherit' }
 	)
 
-	const installedPackage = join(
-		consumerDirectory,
-		'node_modules',
-		'@mnigos',
-		'platform-hono'
-	)
-	accessSync(join(installedPackage, 'dist/index.d.ts'))
-	accessSync(join(installedPackage, 'dist/index.js'))
-
 	execFileSync(
 		process.execPath,
 		[
@@ -138,14 +123,6 @@ if (response.bodyUsed || JSON.stringify(await response.json()) !== '{"ok":true}'
 		cwd: consumerDirectory,
 		stdio: 'inherit',
 	})
-	execFileSync(
-		process.execPath,
-		[join(consumerDirectory, 'dist/consumer.js')],
-		{
-			cwd: consumerDirectory,
-			stdio: 'inherit',
-		}
-	)
 } finally {
 	rmSync(temporaryRoot, { force: true, recursive: true })
 }

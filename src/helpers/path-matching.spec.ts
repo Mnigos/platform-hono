@@ -15,24 +15,17 @@ describe('path matching helpers', () => {
 		expect(isPathMatch('/anything', '')).toBe(true)
 	})
 
-	test('canonicalizes unreserved percent-encoding before matching', () => {
-		expect(isPathMatch('/api/%75ploads/avatar', '/api/uploads')).toBe(true)
-		expect(isPathMatch('/api/uploads/avatar', '/api/%75ploads')).toBe(true)
-		expect(isPathMatch('/caf%C3%A9/menu', '/caf%C3%A9')).toBe(true)
-	})
-
-	test('does not decode escaped path separators', () => {
-		expect(isPathMatch('/api%2Fadmin/users', '/api/admin')).toBe(false)
-		expect(isPathMatch('/api%2fadmin/users', '/api%2Fadmin')).toBe(true)
-	})
-
-	test('handles malformed percent-encoding without throwing', () => {
-		expect(isPathMatch('/api/%zz/users', '/api/users')).toBe(false)
-		expect(isPathMatch('/api/%75ploads/%zz', '/api/uploads')).toBe(true)
-	})
-
-	test('does not repeatedly decode percent-encoded percent signs', () => {
-		expect(isPathMatch('/api/%2575ploads', '/api/uploads')).toBe(false)
+	test.each<[string, string, boolean]>([
+		['/api/%75ploads/avatar', '/api/uploads', true],
+		['/api/uploads/avatar', '/api/%75ploads', true],
+		['/caf%C3%A9/menu', '/caf%C3%A9', true],
+		['/api%2Fadmin/users', '/api/admin', false],
+		['/api%2fadmin/users', '/api%2Fadmin', true],
+		['/api/%zz/users', '/api/users', false],
+		['/api/%75ploads/%zz', '/api/uploads', true],
+		['/api/%2575ploads', '/api/uploads', false],
+	])('matches encoded path %s against %s', (pathname, configuredPath, expected) => {
+		expect(isPathMatch(pathname, configuredPath)).toBe(expected)
 	})
 
 	test('selects the longest matching request size limit', () => {

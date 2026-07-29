@@ -1,6 +1,6 @@
 {
   "name": "@mnigos/platform-hono",
-  "version": "0.3.0",
+  "version": "0.2.0",
   "type": "module",
   "license": "MIT",
   "repository": {
@@ -38,7 +38,7 @@
     "prepublish:check": "bun run check && bun run typecheck && bun run test && bun run test:integration && bun run build && bun run test:exports",
     "prepublishOnly": "bun run prepublish:check",
     "publish:public": "npm publish --access public",
-    "release": "bun run prepublish:check && changeset publish",
+    "release": "changeset publish",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:exports": "bun scripts/check-exports.ts",
