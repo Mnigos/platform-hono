@@ -74,6 +74,26 @@ function createSseEvents() {
 	})
 }
 
+let activeSseSubscriptions = 0
+
+function createInfiniteSseEvents() {
+	return new Observable<MessageEvent>(subscriber => {
+		activeSseSubscriptions += 1
+		const interval = setInterval(() => {
+			subscriber.next({ data: 'tick' })
+		}, 5)
+
+		return () => {
+			activeSseSubscriptions -= 1
+			clearInterval(interval)
+		}
+	})
+}
+
+export function getActiveSseSubscriptions() {
+	return activeSseSubscriptions
+}
+
 @Injectable()
 class RequestBodyCompatibilityGuard implements CanActivate {
 	canActivate(context: ExecutionContext) {
@@ -231,6 +251,12 @@ class TestController {
 		})
 	}
 
+	@Get('/returns/problem')
+	@Header('content-type', 'application/problem+json')
+	returnProblem() {
+		return { detail: 'problem' }
+	}
+
 	@Get('/redirect')
 	@Redirect('/hello/redirected?q=yes', 302)
 	redirect() {
@@ -281,6 +307,11 @@ class TestController {
 	@Header('x-sse-test', 'yes')
 	events() {
 		return createSseEvents()
+	}
+
+	@Sse('/events/infinite')
+	infiniteEvents() {
+		return createInfiniteSseEvents()
 	}
 
 	@Get('/fail')

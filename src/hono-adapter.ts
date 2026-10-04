@@ -1,3 +1,4 @@
+import { EventEmitter } from 'node:events'
 import {
 	createServer as createHttpServer,
 	type Server as HttpServer,
@@ -33,7 +34,7 @@ import { getNestHonoRequest } from './helpers/request'
 import {
 	finalizeResponse,
 	getFinalizedResponse,
-	normalizeContext,
+	isJsonContentType,
 } from './helpers/response'
 import type { HonoAdapterOptions } from './options'
 
@@ -44,14 +45,44 @@ type RouteHandler = (
 
 type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
 
+interface NodeRequestBindings {
+	incoming?: {
+		on: (event: string, listener: (...args: unknown[]) => void) => unknown
+		socket?: NodeSocketLike
+	}
+}
+
+interface NodeSocketLike {
+	on: (event: string, listener: (...args: unknown[]) => void) => unknown
+	once: (event: string, listener: (...args: unknown[]) => void) => unknown
+	removeListener: (
+		event: string,
+		listener: (...args: unknown[]) => void
+	) => unknown
+	[key: PropertyKey]: unknown
+}
+
+interface RequestSocketBridge {
+	signalClose: () => void
+	socket: NodeSocketLike
+}
+
+interface RequestEventBridge {
+	on?: (event: string, listener: (...args: unknown[]) => void) => unknown
+	socket?: unknown
+}
+
 interface HonoSseContext extends Context {
-	getHeaders?: () => Record<string, string>
+	getHeaders?: () => OutgoingHttpHeaders
 	raw?: HonoSseWritable
+	requestSocketBridge?: RequestSocketBridge
+	sseResponseReady?: Promise<Response>
+	sseStarted?: boolean
 }
 
 interface HonoSseWritable extends PassThrough {
 	flushHeaders: () => void
-	getHeaders: () => Record<string, string>
+	getHeaders: () => OutgoingHttpHeaders
 	setHeader: (name: string, value: number | string | string[]) => void
 	statusCode?: number
 	writeHead: (
@@ -77,7 +108,12 @@ function normalizeHonoPath(path: string) {
 }
 
 function getResponseHeaders(ctx: Context) {
-	return Object.fromEntries(ctx.res.headers)
+	const headers: OutgoingHttpHeaders = Object.fromEntries(ctx.res.headers)
+	const setCookies = (
+		ctx.res.headers as Headers & { getSetCookie?: () => string[] }
+	).getSetCookie?.()
+	if (setCookies?.length) headers['set-cookie'] = setCookies
+	return headers
 }
 
 function setResponseHeader(
@@ -86,10 +122,88 @@ function setResponseHeader(
 	value: number | string | string[] | undefined
 ) {
 	if (value === undefined) return
-	ctx.res.headers.set(
-		name,
-		Array.isArray(value) ? value.join(', ') : String(value)
-	)
+	if (!Array.isArray(value)) {
+		ctx.res.headers.set(name, String(value))
+		return
+	}
+
+	ctx.res.headers.delete(name)
+	for (const item of value) ctx.res.headers.append(name, String(item))
+}
+
+function createRequestSocketBridge(socket: NodeSocketLike) {
+	const closeEvents = new EventEmitter()
+	let listening = false
+	let bridgedSocket: NodeSocketLike
+	const forwardClose = (...args: unknown[]) => {
+		listening = false
+		closeEvents.emit('close', ...args)
+	}
+	const listen = () => {
+		if (listening) return
+		listening = true
+		socket.once('close', forwardClose)
+	}
+	const stopListening = () => {
+		if (!listening) return
+		listening = false
+		socket.removeListener('close', forwardClose)
+	}
+	const addCloseListener = (
+		method: 'on' | 'once',
+		listener: (...args: unknown[]) => void
+	) => {
+		listen()
+		closeEvents[method]('close', listener)
+		return bridgedSocket
+	}
+	const removeCloseListener = (listener: (...args: unknown[]) => void) => {
+		closeEvents.removeListener('close', listener)
+		if (closeEvents.listenerCount('close') === 0) stopListening()
+		return bridgedSocket
+	}
+
+	bridgedSocket = new Proxy(socket, {
+		get(target, property) {
+			if (property === 'on' || property === 'addListener') {
+				return (event: string, listener: (...args: unknown[]) => void) => {
+					if (event === 'close') return addCloseListener('on', listener)
+					socket.on(event, listener)
+					return bridgedSocket
+				}
+			}
+			if (property === 'once') {
+				return (event: string, listener: (...args: unknown[]) => void) => {
+					if (event === 'close') return addCloseListener('once', listener)
+					socket.once(event, listener)
+					return bridgedSocket
+				}
+			}
+			if (property === 'off' || property === 'removeListener') {
+				return (event: string, listener: (...args: unknown[]) => void) => {
+					if (event === 'close') return removeCloseListener(listener)
+					socket.removeListener(event, listener)
+					return bridgedSocket
+				}
+			}
+
+			const socketValue = Reflect.get(target, property, target)
+			return typeof socketValue === 'function'
+				? socketValue.bind(target)
+				: socketValue
+		},
+		set(target, property, value) {
+			return Reflect.set(target, property, value, target)
+		},
+	})
+
+	return {
+		signalClose() {
+			stopListening()
+			closeEvents.emit('close')
+		},
+		socket: bridgedSocket,
+	}
 }
 
 export class HonoAdapter extends AbstractHttpAdapter<
@@ -127,7 +241,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	private createRouteHandler(routeHandler: RequestHandler): MiddlewareHandler {
 		return async (ctx, next) => {
-			this.attachSseBridge(ctx)
+			const sseResponse = this.attachSseBridge(ctx)
+			this.attachRequestBridge(ctx)
 			const req = getNestHonoRequest(ctx.req)
 			req.params = ctx.req.param()
 			if (typeof req.query === 'function') req.query = req.query()
@@ -135,17 +250,109 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			if (!req.headers) req.headers = Object.fromEntries(ctx.req.raw.headers)
 			const clientIp = extractClientIp(ctx, this.adapterOptions)
 			if (!req.ip && clientIp) req.ip = clientIp
-			const response = await routeHandler(ctx.req, ctx, next)
-			return getFinalizedResponse(
+			const handlerPromise = Promise.resolve(routeHandler(ctx.req, ctx, next))
+			const result = await Promise.race([
+				handlerPromise.then(response => ({
+					response,
+					type: 'handler' as const,
+				})),
+				sseResponse.then(response => ({ response, type: 'sse' as const })),
+			])
+			if (result.type === 'sse') {
+				handlerPromise.catch(error => {
+					const stream = (ctx as HonoSseContext).raw
+					stream?.destroy(error)
+				})
+				return this.finalizeRouteResponse(ctx, result.response)
+			}
+			return this.finalizeRouteResponse(
 				ctx,
-				response instanceof Response ? response : undefined
+				result.response instanceof Response ? result.response : undefined
 			)
 		}
 	}
 
+	private async finalizeRouteResponse(ctx: Context, response?: Response) {
+		const finalized = getFinalizedResponse(ctx, response)
+		if (ctx.req.method !== 'HEAD' || !finalized.body) return finalized
+
+		const sseContext = ctx as HonoSseContext
+		if (sseContext.sseStarted) {
+			sseContext.requestSocketBridge?.signalClose()
+			if (sseContext.raw) {
+				await new Promise<void>(resolve => {
+					if (sseContext.raw?.closed) {
+						resolve()
+						return
+					}
+					sseContext.raw?.once('close', resolve)
+					sseContext.raw?.destroy()
+				})
+			}
+		} else await finalized.body.cancel().catch(() => undefined)
+		return finalizeResponse(
+			ctx,
+			new Response(null, {
+				headers: finalized.headers,
+				status: finalized.status,
+				statusText: finalized.statusText,
+			})
+		)
+	}
+
+	private attachRequestBridge(ctx: Context) {
+		const req = getNestHonoRequest(ctx.req)
+		const rawRequest = ctx.req.raw as Request & RequestEventBridge
+		const incoming = (ctx.env as NodeRequestBindings | undefined)?.incoming
+		if (incoming?.socket) {
+			const sseContext = ctx as HonoSseContext
+			const requestSocketBridge =
+				sseContext.requestSocketBridge ??
+				createRequestSocketBridge(incoming.socket)
+			sseContext.requestSocketBridge = requestSocketBridge
+			if (!req.socket) req.socket = requestSocketBridge.socket
+			if (!rawRequest.socket) rawRequest.socket = requestSocketBridge.socket
+		}
+		const on = (event: string, listener: (...args: unknown[]) => void) => {
+			if (event !== 'close' && incoming) return incoming.on(event, listener)
+			if (event !== 'close') return req
+
+			const sseContext = ctx as HonoSseContext
+			const socket = sseContext.requestSocketBridge?.socket
+			const signal = ctx.req.raw.signal
+			const sseResponse = sseContext.raw
+			let called = false
+			const cleanup = () => {
+				signal.removeEventListener('abort', invokeListener)
+				socket?.removeListener('close', invokeListener)
+				sseResponse?.removeListener('close', invokeListener)
+			}
+			const invokeListener = (...args: unknown[]) => {
+				if (called) return
+				called = true
+				cleanup()
+				listener(...args)
+			}
+			if (signal.aborted) queueMicrotask(invokeListener)
+			else {
+				signal.addEventListener('abort', invokeListener, { once: true })
+				socket?.once('close', invokeListener)
+				sseResponse?.once('close', invokeListener)
+			}
+			return req
+		}
+		req.on = on
+		rawRequest.on = on
+	}
+
 	private attachSseBridge(ctx: Context) {
 		const sseCtx = ctx as HonoSseContext
-		if (sseCtx.raw) return
+		if (sseCtx.sseResponseReady) return sseCtx.sseResponseReady
+		let resolveResponse: (response: Response) => void = () => undefined
+		const responseReady = new Promise<Response>(resolve => {
+			resolveResponse = resolve
+		})
+		sseCtx.sseResponseReady = responseReady
 
 		const stream = new PassThrough() as HonoSseWritable
 		sseCtx.getHeaders = () => getResponseHeaders(ctx)
@@ -155,6 +362,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		}
 		stream.flushHeaders = () => undefined
 		stream.writeHead = (statusCode, reasonPhraseOrHeaders, headers) => {
+			sseCtx.sseStarted = true
 			const outgoingHeaders =
 				typeof reasonPhraseOrHeaders === 'string'
 					? headers
@@ -168,17 +376,17 @@ export class HonoAdapter extends AbstractHttpAdapter<
 					setResponseHeader(ctx, name, value)
 				}
 			}
-
 			if (!ctx.finalized) {
-				finalizeResponse(
-					ctx,
-					ctx.body(Readable.toWeb(stream) as ReadableStream<Uint8Array>)
+				const response = ctx.body(
+					Readable.toWeb(stream) as ReadableStream<Uint8Array>
 				)
+				resolveResponse(finalizeResponse(ctx, response))
 			}
 
 			return stream
 		}
 		sseCtx.raw = stream
+		return responseReady
 	}
 
 	private registerRoute(
@@ -284,7 +492,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		const bodyRecord = body as Record<string, unknown> | undefined
 
 		if (
-			!responseContentType?.startsWith('application/json') &&
+			!isJsonContentType(responseContentType) &&
 			bodyRecord?.statusCode &&
 			(bodyRecord.statusCode as number) >= HttpStatus.BAD_REQUEST
 		) {
@@ -311,14 +519,10 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		throw new Error('Method not implemented.')
 	}
 
-	async redirect(ctx: Context, statusCode: number, url: string) {
-		const normalizedCtx = await normalizeContext(ctx)
+	redirect(ctx: Context, statusCode: number, url: string) {
 		finalizeResponse(
-			normalizedCtx,
-			normalizedCtx.redirect(
-				url,
-				statusCode as Parameters<Context['redirect']>[1]
-			)
+			ctx,
+			ctx.redirect(url, statusCode as Parameters<Context['redirect']>[1])
 		)
 	}
 

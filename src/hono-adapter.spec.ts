@@ -1,6 +1,9 @@
+import { EventEmitter } from 'node:events'
 import type { Server } from 'node:http'
+import { PassThrough } from 'node:stream'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Logger, RequestMethod } from '@nestjs/common'
+import type { Context } from 'hono'
 import { getNestHonoRequest, type NestHonoRequest } from './helpers/request'
 import { HonoAdapter } from './hono-adapter'
 
@@ -88,6 +91,48 @@ describe('HonoAdapter', () => {
 		).resolves.toBe('all')
 	})
 
+	test('cancels GET response streams used for HEAD fallback', async () => {
+		const adapter = new HonoAdapter()
+		const stream = new PassThrough()
+
+		adapter.get('/stream', async (_req, ctx) => {
+			await adapter.reply(ctx, stream)
+		})
+
+		const response = await adapter.hono.request('/stream', { method: 'HEAD' })
+
+		expect(response.status).toBe(200)
+		expect(response.body).toBeNull()
+		expect(stream.destroyed).toBe(true)
+	})
+
+	test('emits request close when the client socket disconnects', async () => {
+		const adapter = new HonoAdapter()
+		const socket = new EventEmitter()
+		const closeListener = vi.fn()
+
+		adapter.get('/disconnect', (req, ctx) => {
+			const on = getNestHonoRequest(req).on as (
+				event: string,
+				listener: () => void
+			) => void
+			on('close', closeListener)
+			adapter.reply(ctx, new ReadableStream())
+		})
+
+		const response = await adapter.hono.request('/disconnect', undefined, {
+			incoming: { socket },
+		})
+		const reader = response.body?.getReader()
+
+		if (!reader) throw new Error('Expected a response body reader')
+		const pendingRead = reader.read()
+		socket.emit('close')
+
+		await expect(pendingRead).resolves.toMatchObject({ done: true })
+		expect(closeListener).toHaveBeenCalledOnce()
+	})
+
 	test('throws when a route handler is missing', () => {
 		const adapter = new HonoAdapter()
 
@@ -123,6 +168,27 @@ describe('HonoAdapter', () => {
 		expect(response.status).toBe(202)
 		expect(response.headers.get('x-direct')).toBe('yes')
 		await expect(response.text()).resolves.toBe('direct')
+	})
+
+	test('preserves repeated response headers in the SSE facade', async () => {
+		const adapter = new HonoAdapter()
+		let setCookies: unknown
+
+		adapter.get('/sse-headers', (_req, ctx) => {
+			ctx.res.headers.append('set-cookie', 'a=1')
+			ctx.res.headers.append('set-cookie', 'b=2')
+			const getHeaders = (
+				ctx as Context & {
+					getHeaders?: () => Record<string, unknown>
+				}
+			).getHeaders
+			setCookies = getHeaders?.()['set-cookie']
+			adapter.reply(ctx, 'ok')
+		})
+
+		await adapter.hono.request('/sse-headers')
+
+		expect(setCookies).toEqual(['a=1', 'b=2'])
 	})
 
 	test('runs use middleware before routes', async () => {
@@ -380,6 +446,29 @@ describe('HonoAdapter', () => {
 		await expect(response.json()).resolves.toEqual({
 			message: 'nope',
 			statusCode: 500,
+		})
+	})
+
+	test('preserves structured JSON content types for error responses', async () => {
+		const warnSpy = vi
+			.spyOn(Logger.prototype, 'warn')
+			.mockImplementation(() => undefined)
+		const adapter = new HonoAdapter()
+
+		adapter.get('/problem', async (_req, ctx) => {
+			ctx.header('content-type', 'application/problem+json')
+			await adapter.reply(ctx, { detail: 'nope', statusCode: 400 }, 400)
+		})
+
+		const response = await adapter.hono.request('/problem')
+
+		expect(warnSpy).not.toHaveBeenCalled()
+		expect(response.headers.get('content-type')).toBe(
+			'application/problem+json'
+		)
+		await expect(response.json()).resolves.toEqual({
+			detail: 'nope',
+			statusCode: 400,
 		})
 	})
 
