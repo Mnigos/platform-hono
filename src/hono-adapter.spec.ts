@@ -1,5 +1,6 @@
 import { EventEmitter } from 'node:events'
 import type { Server } from 'node:http'
+import type { Server as HttpsServer } from 'node:https'
 import { PassThrough } from 'node:stream'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Logger, RequestMethod } from '@nestjs/common'
@@ -10,6 +11,8 @@ import { HonoAdapter } from './hono-adapter'
 vi.mock('@hono/node-server/serve-static', () => ({
 	serveStatic: vi.fn(() => async () => new Response('static')),
 }))
+
+const TRUSTED_ORIGIN_REGEX = /^https:\/\/trusted\.test$/
 
 beforeEach(() => {
 	vi.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined)
@@ -660,6 +663,9 @@ describe('HonoAdapter', () => {
 
 		adapter.enableCors(corsOptions)
 		adapter.useStaticAssets('/assets/*', staticOptions)
+		adapter.post('/assets/app.js', async (_req, ctx) => {
+			await adapter.reply(ctx, 'controller')
+		})
 
 		expect(serveStatic).toHaveBeenCalledWith(staticOptions)
 
@@ -671,8 +677,98 @@ describe('HonoAdapter', () => {
 			'https://example.test'
 		)
 		await expect(response.text()).resolves.toBe('static')
+		await expect(
+			(await adapter.hono.request('/assets/app.js', { method: 'POST' })).text()
+		).resolves.toBe('controller')
 		expect(staticOptions).toEqual({ root: './public' })
 		expect(corsOptions).toEqual({ origin: 'https://example.test' })
+	})
+
+	test('cancels static response streams when the client disconnects', async () => {
+		const socket = new EventEmitter()
+		const cancel = vi.fn()
+		vi.mocked(serveStatic).mockReturnValueOnce(
+			async () => new Response(new ReadableStream({ cancel }))
+		)
+		const adapter = new HonoAdapter()
+		adapter.useStaticAssets('/assets/*', { root: './public' })
+
+		const response = await adapter.hono.request('/assets/app.js', undefined, {
+			incoming: { socket },
+		})
+		const reader = response.body?.getReader()
+
+		if (!reader) throw new Error('Expected a response body reader')
+		const pendingRead = reader.read()
+		socket.emit('close')
+
+		await expect(pendingRead).resolves.toMatchObject({ done: true })
+		expect(cancel).toHaveBeenCalledOnce()
+	})
+
+	test('translates restrictive Nest CORS options and delegates', async () => {
+		const defaultAdapter = new HonoAdapter()
+		defaultAdapter.enableCors()
+		const defaultResponse = await defaultAdapter.hono.request('/target', {
+			headers: {
+				'access-control-request-method': 'POST',
+				origin: 'https://example.test',
+			},
+			method: 'OPTIONS',
+		})
+		expect(
+			defaultResponse.headers.get('access-control-allow-methods')
+		).toContain('POST')
+
+		const optionsAdapter = new HonoAdapter()
+		optionsAdapter.enableCors({
+			allowedHeaders: ['content-type'],
+			exposedHeaders: ['x-result'],
+			methods: ['POST'],
+			origin: TRUSTED_ORIGIN_REGEX,
+		})
+
+		const allowedResponse = await optionsAdapter.hono.request('/target', {
+			headers: {
+				'access-control-request-headers': 'authorization',
+				'access-control-request-method': 'DELETE',
+				origin: 'https://trusted.test',
+			},
+			method: 'OPTIONS',
+		})
+		expect(allowedResponse.headers.get('access-control-allow-origin')).toBe(
+			'https://trusted.test'
+		)
+		expect(allowedResponse.headers.get('access-control-allow-methods')).toBe(
+			'POST'
+		)
+		expect(allowedResponse.headers.get('access-control-allow-headers')).toBe(
+			'content-type'
+		)
+
+		const delegateAdapter = new HonoAdapter()
+		delegateAdapter.enableCors((_request, callback) => {
+			callback(null, { origin: 'https://trusted.test' })
+		})
+		const rejectedResponse = await delegateAdapter.hono.request('/target', {
+			headers: { origin: 'https://attacker.test' },
+		})
+		expect(rejectedResponse.headers.has('access-control-allow-origin')).toBe(
+			false
+		)
+	})
+
+	test('translates the standard Nest static root and prefix', () => {
+		const adapter = new HonoAdapter()
+
+		adapter.useStaticAssets('/tmp/public', { prefix: '/assets/' })
+
+		expect(serveStatic).toHaveBeenCalledWith(
+			expect.objectContaining({
+				rewriteRequestPath: expect.any(Function),
+				root: '/tmp/public',
+			})
+		)
 	})
 
 	test('creates middleware factories for Nest request methods', async () => {
@@ -835,16 +931,32 @@ describe('HonoAdapter', () => {
 		expect(listenSpy).toHaveBeenCalledWith(0)
 		expect(closeSpy).toHaveBeenCalledOnce()
 		expect(closeIdleConnectionsSpy).toHaveBeenCalledOnce()
-		expect(closeAllConnectionsSpy).toHaveBeenCalledOnce()
+		expect(closeAllConnectionsSpy).not.toHaveBeenCalled()
+
+		const forceCloseAdapter = new HonoAdapter()
+		forceCloseAdapter.initHttpServer({ forceCloseConnections: true })
+		const forceCloseServer = forceCloseAdapter.getHttpServer() as Server
+		vi.spyOn(forceCloseServer, 'close').mockImplementation(callback => {
+			callback?.()
+			return forceCloseServer
+		})
+		const forceCloseConnectionsSpy = vi.spyOn(
+			forceCloseServer,
+			'closeAllConnections'
+		)
+		await forceCloseAdapter.close()
+		expect(forceCloseConnectionsSpy).toHaveBeenCalledOnce()
 
 		const httpsAdapter = new HonoAdapter()
 		httpsAdapter.initHttpServer({
 			httpsOptions: {
-				cert: 'cert',
-				key: 'key',
+				requestCert: true,
 			},
 		})
 
-		expect(httpsAdapter.getHttpServer()).toBeDefined()
+		expect(
+			(httpsAdapter.getHttpServer() as HttpsServer & { requestCert: boolean })
+				.requestCert
+		).toBe(true)
 	})
 })

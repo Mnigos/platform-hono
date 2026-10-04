@@ -10,7 +10,10 @@ import {
 } from 'node:https'
 import { PassThrough, Readable } from 'node:stream'
 import { createAdaptorServer } from '@hono/node-server'
-import { serveStatic } from '@hono/node-server/serve-static'
+import {
+	type ServeStaticOptions,
+	serveStatic,
+} from '@hono/node-server/serve-static'
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response'
 import {
 	HttpStatus,
@@ -20,6 +23,11 @@ import {
 	type VersioningOptions,
 } from '@nestjs/common'
 import type { RequestHandler } from '@nestjs/common/interfaces'
+import type {
+	CorsOptions,
+	CorsOptionsDelegate,
+	CustomOrigin,
+} from '@nestjs/common/interfaces/external/cors-options.interface'
 import { AbstractHttpAdapter } from '@nestjs/core'
 import { type Context, Hono, type MiddlewareHandler } from 'hono'
 import { cors } from 'hono/cors'
@@ -32,6 +40,7 @@ import { extractClientIp } from './helpers/client-ip'
 import { getRequestSizeLimit, isPathMatch } from './helpers/path-matching'
 import { getNestHonoRequest } from './helpers/request'
 import {
+	createResponse,
 	finalizeResponse,
 	getFinalizedResponse,
 	isJsonContentType,
@@ -68,7 +77,15 @@ type HonoRouteMethod =
 	| 'unlock'
 	| 'use'
 
+type NestCorsOptions = Exclude<
+	NestApplicationOptions['cors'],
+	boolean | undefined
+>
 type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
+
+interface StaticAssetsOptions extends ServeStaticOptions {
+	prefix?: string
+}
 
 interface NodeRequestBindings {
 	incoming?: {
@@ -255,6 +272,111 @@ function setResponseHeader(
 	for (const item of value) ctx.res.headers.append(name, String(item))
 }
 
+function normalizeCorsList(value?: string | string[]) {
+	if (!value) return
+	return Array.isArray(value)
+		? value
+		: value
+				.split(',')
+				.map(item => item.trim())
+				.filter(Boolean)
+}
+
+function isAllowedOrigin(
+	requestOrigin: string,
+	allowedOrigin: boolean | string | RegExp | (string | RegExp)[]
+): boolean {
+	if (allowedOrigin === true || allowedOrigin === '*') return true
+	if (!allowedOrigin) return false
+	if (Array.isArray(allowedOrigin)) {
+		return allowedOrigin.some(origin => isAllowedOrigin(requestOrigin, origin))
+	}
+	if (allowedOrigin instanceof RegExp) {
+		allowedOrigin.lastIndex = 0
+		return allowedOrigin.test(requestOrigin)
+	}
+	return allowedOrigin === requestOrigin
+}
+
+function normalizeCorsOrigin(origin: CorsOptions['origin']) {
+	if (origin === undefined) return '*'
+	if (origin === false) return () => undefined
+	if (typeof origin !== 'function') {
+		if (origin === '*') return '*'
+		return (requestOrigin: string) =>
+			isAllowedOrigin(requestOrigin, origin) ? requestOrigin : undefined
+	}
+
+	const originCallback = origin as (
+		requestOrigin: string | undefined,
+		callback: Parameters<CustomOrigin>[1]
+	) => void
+	return (requestOrigin: string) =>
+		new Promise<string | undefined>((resolve, reject) => {
+			originCallback(requestOrigin || undefined, (error, allowedOrigin) => {
+				if (error) {
+					reject(error)
+					return
+				}
+				if (!(allowedOrigin && isAllowedOrigin(requestOrigin, allowedOrigin))) {
+					resolve(undefined)
+					return
+				}
+				resolve(allowedOrigin === '*' ? '*' : requestOrigin)
+			})
+		})
+}
+
+function normalizeCorsOptions(options: CorsOptions) {
+	const allowHeaders = normalizeCorsList(options.allowedHeaders)
+	const allowMethods = normalizeCorsList(options.methods)
+	const exposeHeaders = normalizeCorsList(options.exposedHeaders)
+	return {
+		...(allowHeaders ? { allowHeaders } : {}),
+		...(allowMethods ? { allowMethods } : {}),
+		...(options.credentials === undefined
+			? {}
+			: { credentials: options.credentials }),
+		...(exposeHeaders ? { exposeHeaders } : {}),
+		...(options.maxAge === undefined ? {} : { maxAge: options.maxAge }),
+		origin: normalizeCorsOrigin(options.origin),
+	}
+}
+
+function resolveCorsOptions(
+	delegate: CorsOptionsDelegate<Context['req']>,
+	request: Context['req']
+) {
+	return new Promise<CorsOptions>((resolve, reject) => {
+		delegate(request, (error, options) => {
+			if (error) reject(error)
+			else resolve(options)
+		})
+	})
+}
+
+function normalizeStaticPrefix(prefix: string) {
+	const normalized = `/${prefix.replace(/^\/+|\/+$/g, '')}`
+	return normalized === '/' ? '' : normalized
+}
+
+function createStaticMiddleware(options: ServeStaticOptions) {
+	const middleware = serveStatic(options)
+	return async (ctx: Context, next: () => Promise<void>) => {
+		if (ctx.req.method === 'GET' || ctx.req.method === 'HEAD') {
+			let continued = false
+			const response = await middleware(ctx, async () => {
+				continued = true
+				await next()
+			})
+			if (continued || !(response instanceof Response)) return response
+
+			return finalizeResponse(ctx, createResponse(ctx, response))
+		}
+		return next()
+	}
+}
+
 function createRequestSocketBridge(socket: NodeSocketLike) {
 	const closeEvents = new EventEmitter()
 	let listening = false
@@ -347,6 +469,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	private _isParserRegistered = false
 	private readonly adapterOptions: HonoAdapterOptions
 	private readonly logger = new Logger('HonoAdapter')
+	private forceCloseConnections = false
 	private readonly headRoutePaths = new Set<string>()
 
 	constructor(options: HonoAdapterOptions = {}) {
@@ -750,9 +873,31 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		})
 	}
 
-	useStaticAssets(path: string, options: Parameters<typeof serveStatic>[0]) {
+	useStaticAssets(rootPath: string, options: StaticAssetsOptions = {}) {
 		this.logger.log('Registering static assets middleware')
-		this.hono.use(path, serveStatic(options))
+		const { prefix, ...staticOptions } = options
+		if (staticOptions.root !== undefined) {
+			this.hono.use(rootPath, createStaticMiddleware(staticOptions))
+			return
+		}
+
+		const staticPrefix = normalizeStaticPrefix(prefix ?? '')
+		const rewriteRequestPath = staticOptions.rewriteRequestPath
+		const middleware = createStaticMiddleware({
+			...staticOptions,
+			rewriteRequestPath: (requestPath, ctx) => {
+				const pathWithoutPrefix = staticPrefix
+					? requestPath.slice(staticPrefix.length) || '/'
+					: requestPath
+				return rewriteRequestPath
+					? rewriteRequestPath(pathWithoutPrefix, ctx)
+					: pathWithoutPrefix
+			},
+			root: rootPath,
+		})
+
+		if (staticPrefix) this.hono.use(`${staticPrefix}/*`, middleware)
+		else this.hono.use(middleware)
 	}
 
 	setViewEngine() {
@@ -793,8 +938,33 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		return `${url.pathname}${url.search}`
 	}
 
-	enableCors(options: Parameters<typeof cors>[0]) {
-		this.hono.use(cors(options))
+	enableCors(options: NestCorsOptions = {}) {
+		this.hono.use(async (ctx, next) => {
+			const resolvedOptions =
+				typeof options === 'function'
+					? await resolveCorsOptions(options, ctx.req)
+					: options
+			const corsMiddleware = cors(normalizeCorsOptions(resolvedOptions))
+
+			if (ctx.req.method === 'OPTIONS' && resolvedOptions.preflightContinue) {
+				await corsMiddleware(ctx, async () => undefined)
+				await next()
+				return
+			}
+
+			const response = await corsMiddleware(ctx, next)
+			if (
+				ctx.req.method === 'OPTIONS' &&
+				resolvedOptions.optionsSuccessStatus &&
+				response instanceof Response
+			) {
+				return new Response(null, {
+					headers: response.headers,
+					status: resolvedOptions.optionsSuccessStatus,
+				})
+			}
+			return response
+		})
 	}
 
 	useBodyParser(
@@ -831,7 +1001,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		return new Promise(resolve => {
 			this.httpServer.close(() => resolve())
 			this.httpServer.closeIdleConnections?.()
-			this.httpServer.closeAllConnections?.()
+			if (this.forceCloseConnections) this.httpServer.closeAllConnections?.()
 		})
 	}
 
@@ -873,6 +1043,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	initHttpServer(options: NestApplicationOptions) {
+		this.forceCloseConnections = options.forceCloseConnections ?? false
+
 		this.hono.use(async (ctx, next) => {
 			const pathname = this.normalizeRequestMetadata(ctx)
 			const requestSizeLimit = getRequestSizeLimit(
@@ -888,14 +1060,20 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		if (options.bodyParser !== false)
 			this.registerParserMiddleware(undefined, options.rawBody)
 
-		const isHttpsEnabled = !!options?.httpsOptions
-		const createServer = isHttpsEnabled ? createHttpsServer : createHttpServer
-
-		this.httpServer = createAdaptorServer({
-			fetch: this.hono.fetch,
-			createServer,
-			overrideGlobalObjects: false,
-		}) as HttpServer | HttpsServer
+		this.httpServer = (
+			options.httpsOptions
+				? createAdaptorServer({
+						fetch: this.hono.fetch,
+						createServer: createHttpsServer,
+						overrideGlobalObjects: false,
+						serverOptions: options.httpsOptions,
+					})
+				: createAdaptorServer({
+						fetch: this.hono.fetch,
+						createServer: createHttpServer,
+						overrideGlobalObjects: false,
+					})
+		) as HttpServer | HttpsServer
 	}
 
 	getType() {
