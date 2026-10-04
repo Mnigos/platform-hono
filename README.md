@@ -128,9 +128,10 @@ const adapter = new HonoAdapter({
 })
 ```
 
-By default, trusted proxy mode considers common proxy headers including
-`cf-connecting-ip`, `x-forwarded-for`, `x-real-ip`, `forwarded`, and
-`true-client-ip`.
+By default, trusted proxy mode accepts only `x-forwarded-for`. Without trusted
+proxy mode, `req.ip` comes from the direct socket connection when available.
+The rightmost forwarded address is used, which is safe for a trusted proxy that
+appends the connecting client address.
 
 To restrict the accepted headers:
 
@@ -139,6 +140,15 @@ const adapter = new HonoAdapter({
 	trustProxy: {
 		headers: ['cf-connecting-ip'],
 	},
+})
+```
+
+For multiple trusted proxies, set `trustedHops` to select the client address
+from right to left:
+
+```ts
+const adapter = new HonoAdapter({
+	trustProxy: { trustedHops: 2 },
 })
 ```
 

@@ -423,7 +423,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	private normalizeRequestMetadata(ctx: Context) {
 		const req = getNestHonoRequest(ctx.req)
 		const clientIp = extractClientIp(ctx, this.adapterOptions)
-		if (clientIp) req.ip = clientIp
+		if (!req.ip && clientIp) req.ip = clientIp
 		req.headers = Object.fromEntries(ctx.req.raw.headers)
 
 		const pathname = new URL(ctx.req.url).pathname

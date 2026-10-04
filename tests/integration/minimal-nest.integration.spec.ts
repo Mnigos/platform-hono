@@ -524,7 +524,9 @@ describe('minimal Nest integration', () => {
 				headers: { 'x-forwarded-for': '203.0.113.10' },
 			})
 			expect(response.status).toBe(200)
-			await expect(response.json()).resolves.toEqual({})
+			await expect(response.json()).resolves.toMatchObject({
+				ip: expect.stringMatching('127\\.0\\.0\\.1$'),
+			})
 		} finally {
 			await untrustedApp.close()
 		}
@@ -536,7 +538,7 @@ describe('minimal Nest integration', () => {
 				headers: { 'x-forwarded-for': '203.0.113.10, 10.0.0.1' },
 			})
 			expect(response.status).toBe(200)
-			await expect(response.json()).resolves.toEqual({ ip: '203.0.113.10' })
+			await expect(response.json()).resolves.toEqual({ ip: '10.0.0.1' })
 		} finally {
 			await trustedApp.close()
 		}
