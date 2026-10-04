@@ -14,14 +14,11 @@ import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response'
 import {
 	HttpStatus,
 	Logger,
+	type NestApplicationOptions,
 	RequestMethod,
 	type VersioningOptions,
 } from '@nestjs/common'
-import type {
-	NestApplicationOptions,
-	RequestHandler,
-	VersionValue,
-} from '@nestjs/common/interfaces'
+import type { RequestHandler } from '@nestjs/common/interfaces'
 import { AbstractHttpAdapter } from '@nestjs/core'
 import { type Context, Hono, type MiddlewareHandler } from 'hono'
 import { cors } from 'hono/cors'
@@ -43,6 +40,8 @@ type RouteHandler = (
 	req: Context['req'],
 	res: Context
 ) => Response | undefined | Promise<Response | undefined>
+
+type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
 
 interface HonoSseContext extends Context {
 	getHeaders?: () => Record<string, string>
@@ -403,7 +402,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		const skipPaths = this.adapterOptions.skipBodyParserFor ?? []
 
 		this.hono.use(async (ctx, next) => {
-			const pathname = this.normalizeRequestMetadata(ctx)
+			const pathname = new URL(ctx.req.url).pathname
 			const shouldSkip = skipPaths.some(path => isPathMatch(pathname, path))
 			const requestSizeLimit = getRequestSizeLimit(
 				pathname,
@@ -419,6 +418,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 				)
 			}
 
+			this.normalizeRequestMetadata(ctx)
 			await next()
 		})
 

@@ -15,6 +15,8 @@ bun add @mnigos/platform-hono hono @hono/node-server @nestjs/common @nestjs/core
 `@nestjs/common`, `@nestjs/core`, `hono`, and `@hono/node-server` are peer
 dependencies.
 
+This package is ESM-only. CommonJS `require()` is not supported.
+
 ## Bootstrap
 
 ```ts

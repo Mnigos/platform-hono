@@ -1,8 +1,10 @@
 # Security Policy
 
-Report security issues privately to the repository owner.
+Report security issues through [GitHub's private vulnerability reporting
+form](https://github.com/Mnigos/platform-hono/security/advisories/new).
 
-Do not open public issues for suspected vulnerabilities.
+Do not open public issues for suspected vulnerabilities or include sensitive
+details in public discussions.
 
 ## Adapter Defaults
 
