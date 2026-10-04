@@ -40,8 +40,33 @@ import type { HonoAdapterOptions } from './options'
 
 type RouteHandler = (
 	req: Context['req'],
-	res: Context
+	res: Context,
+	next: () => Promise<void>
 ) => Response | undefined | Promise<Response | undefined>
+
+type RouteArguments = [
+	pathOrHandler: string | RouteHandler,
+	handler?: RouteHandler,
+]
+
+type HonoRouteMethod =
+	| 'all'
+	| 'copy'
+	| 'delete'
+	| 'get'
+	| 'head'
+	| 'lock'
+	| 'mkcol'
+	| 'move'
+	| 'options'
+	| 'patch'
+	| 'post'
+	| 'propfind'
+	| 'proppatch'
+	| 'put'
+	| 'search'
+	| 'unlock'
+	| 'use'
 
 type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
 
@@ -93,18 +118,117 @@ interface HonoSseWritable extends PassThrough {
 }
 
 const BODY_LIMIT_REGEX = /^\s*(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?\s*$/i
+const HONO_CONSTRAINT_MARKER_REGEX = /[\\[\]()+*?|^$]/
+const HONO_PARAMETER_SUFFIX_REGEX = /:[A-Za-z_$][\w$]*$/
+const HONO_WILDCARD_SUFFIX_REGEX = /:[A-Za-z_$][\w$]*\{(?:\.\*|\.\+)\}$/
+const OPTIONAL_GROUP_PARAMETER_REGEX = /(?:^|[/.-]):[A-Za-z_$][\w$]*/
+const TRAILING_SLASHES_REGEX = /\/+$/
 
-function parseBodyLimit(limit: number | string | undefined) {
-	if (typeof limit === 'number') return limit
-	const match = limit?.match(BODY_LIMIT_REGEX)
-	if (!match) return
-	const multipliers = { b: 1, gb: 1024 ** 3, kb: 1024, mb: 1024 ** 2 }
-	const unit = (match[2]?.toLowerCase() ?? 'b') as keyof typeof multipliers
-	return Math.floor(Number(match[1]) * multipliers[unit])
+interface OptionalRouteGroup {
+	content: string
+	end: number
+	start: number
 }
 
-function normalizeHonoPath(path: string) {
-	return path.replace(/\/\*([A-Za-z_$][\w$]*)/g, '/:$1{.*}')
+interface OptionalParameterSuffix {
+	name: string
+	suffix: string
+}
+
+function findClosingBrace(path: string, start: number) {
+	let depth = 0
+	let insideCharacterClass = false
+	for (let index = start; index < path.length; index += 1) {
+		const character = path[index]
+		if (character === '\\') {
+			index += 1
+			continue
+		}
+		if (character === '[') insideCharacterClass = true
+		else if (character === ']') insideCharacterClass = false
+		else if (!insideCharacterClass && character === '{') depth += 1
+		else if (!insideCharacterClass && character === '}') {
+			depth -= 1
+			if (depth === 0) return index
+		}
+	}
+}
+
+function findOptionalRouteGroup(path: string): OptionalRouteGroup | undefined {
+	for (let start = 0; start < path.length; start += 1) {
+		if (path[start] !== '{') continue
+		const end = findClosingBrace(path, start)
+		if (end === undefined) return
+		const content = path.slice(start + 1, end)
+		const followsHonoParameter = HONO_PARAMETER_SUFFIX_REGEX.test(
+			path.slice(0, start)
+		)
+		if (
+			!followsHonoParameter ||
+			OPTIONAL_GROUP_PARAMETER_REGEX.test(content) ||
+			!HONO_CONSTRAINT_MARKER_REGEX.test(content)
+		) {
+			return { content, end, start }
+		}
+		start = end
+	}
+}
+
+function getOptionalParameterSuffix(
+	path: string,
+	optionalGroup: OptionalRouteGroup
+): OptionalParameterSuffix | undefined {
+	const name = path
+		.slice(0, optionalGroup.start)
+		.match(HONO_PARAMETER_SUFFIX_REGEX)?.[0]
+		.slice(1)
+	const { content } = optionalGroup
+	if (
+		!(name && content) ||
+		content.includes('/') ||
+		OPTIONAL_GROUP_PARAMETER_REGEX.test(content) ||
+		HONO_CONSTRAINT_MARKER_REGEX.test(content)
+	)
+		return
+
+	return { name, suffix: content }
+}
+
+function getOptionalParameterSuffixes(path: string) {
+	const suffixes: OptionalParameterSuffix[] = []
+	let remainingPath = path
+	for (;;) {
+		const optionalGroup = findOptionalRouteGroup(remainingPath)
+		if (!optionalGroup) return suffixes
+		const suffix = getOptionalParameterSuffix(remainingPath, optionalGroup)
+		if (suffix) suffixes.push(suffix)
+		remainingPath = `${remainingPath.slice(0, optionalGroup.start)}${remainingPath.slice(optionalGroup.end + 1)}`
+	}
+}
+
+function normalizeHonoPaths(path: string): string[] {
+	const optionalGroup = findOptionalRouteGroup(path)
+	if (!optionalGroup) {
+		return [path.replace(/\/\*([A-Za-z_$][\w$]*)/g, '/:$1{.+}')]
+	}
+
+	const before = path.slice(0, optionalGroup.start)
+	const after = path.slice(optionalGroup.end + 1)
+	if (getOptionalParameterSuffix(path, optionalGroup)) {
+		return normalizeHonoPaths(`${before}${after}`)
+	}
+	return [
+		...normalizeHonoPaths(`${before}${optionalGroup.content}${after}`),
+		...normalizeHonoPaths(`${before}${after}`),
+	]
+}
+
+function normalizeHonoMiddlewarePath(path: string) {
+	if (path === '*') return path
+	if (path === '/') return '/*'
+	if (path.endsWith('/*') || HONO_WILDCARD_SUFFIX_REGEX.test(path)) return path
+
+	return `${path.replace(TRAILING_SLASHES_REGEX, '')}/*`
 }
 
 function getResponseHeaders(ctx: Context) {
@@ -206,6 +330,15 @@ function createRequestSocketBridge(socket: NodeSocketLike) {
 	}
 }
 
+function parseBodyLimit(limit: number | string | undefined) {
+	if (typeof limit === 'number') return limit
+	const match = limit?.match(BODY_LIMIT_REGEX)
+	if (!match) return
+	const multipliers = { b: 1, gb: 1024 ** 3, kb: 1024, mb: 1024 ** 2 }
+	const unit = (match[2]?.toLowerCase() ?? 'b') as keyof typeof multipliers
+	return Math.floor(Number(match[1]) * multipliers[unit])
+}
+
 export class HonoAdapter extends AbstractHttpAdapter<
 	HttpServer | HttpsServer,
 	Context['req'],
@@ -214,6 +347,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	private _isParserRegistered = false
 	private readonly adapterOptions: HonoAdapterOptions
 	private readonly logger = new Logger('HonoAdapter')
+	private readonly headRoutePaths = new Set<string>()
 
 	constructor(options: HonoAdapterOptions = {}) {
 		super(new Hono())
@@ -239,18 +373,20 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		return [path, routeHandler]
 	}
 
-	private createRouteHandler(routeHandler: RequestHandler): MiddlewareHandler {
+	private createRouteHandler(
+		routeHandler: RequestHandler,
+		waitForNext = false,
+		optionalParameterSuffixes: OptionalParameterSuffix[] = []
+	): MiddlewareHandler {
 		return async (ctx, next) => {
 			const sseResponse = this.attachSseBridge(ctx)
-			this.attachRequestBridge(ctx)
-			const req = getNestHonoRequest(ctx.req)
-			req.params = ctx.req.param()
-			if (typeof req.query === 'function') req.query = req.query()
-			if (!req.query) req.query = ctx.req.query()
-			if (!req.headers) req.headers = Object.fromEntries(ctx.req.raw.headers)
-			const clientIp = extractClientIp(ctx, this.adapterOptions)
-			if (!req.ip && clientIp) req.ip = clientIp
-			const handlerPromise = Promise.resolve(routeHandler(ctx.req, ctx, next))
+			this.normalizeRequestMetadata(ctx, optionalParameterSuffixes)
+			const handlerPromise = this.invokeHandler(
+				routeHandler,
+				ctx,
+				next,
+				waitForNext
+			)
 			const result = await Promise.race([
 				handlerPromise.then(response => ({
 					response,
@@ -298,6 +434,40 @@ export class HonoAdapter extends AbstractHttpAdapter<
 				statusText: finalized.statusText,
 			})
 		)
+	}
+
+	private async invokeHandler(
+		handler: RequestHandler | Function,
+		ctx: Context,
+		next: () => Promise<void>,
+		waitForNext = false
+	) {
+		let nextPromise: Promise<void> | undefined
+		let notifyNextCall: () => void = () => undefined
+		const nextCalled = new Promise<void>(resolve => {
+			notifyNextCall = resolve
+		})
+		const nestNext = (error?: unknown) => {
+			nextPromise ??=
+				error === undefined || error === null
+					? next()
+					: Promise.reject(
+							error instanceof Error ? error : new Error(String(error))
+						)
+			notifyNextCall()
+			return nextPromise
+		}
+		const response = await handler(ctx.req, ctx, nestNext)
+		if (
+			!nextPromise &&
+			waitForNext &&
+			!(response instanceof Response) &&
+			!ctx.finalized
+		) {
+			await nextCalled
+		}
+		if (nextPromise) await nextPromise
+		return response
 	}
 
 	private attachRequestBridge(ctx: Context) {
@@ -390,15 +560,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	private registerRoute(
-		method:
-			| 'all'
-			| 'get'
-			| 'post'
-			| 'put'
-			| 'delete'
-			| 'use'
-			| 'patch'
-			| 'options',
+		method: HonoRouteMethod,
 		pathOrHandler: string | RouteHandler,
 		handler?: RouteHandler
 	) {
@@ -406,78 +568,118 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			pathOrHandler,
 			handler
 		)
-		const honoPath = normalizeHonoPath(routePath)
 		const wrappedHandler = this.createRouteHandler(
-			routeHandler as RequestHandler
+			routeHandler as RequestHandler,
+			method === 'use',
+			getOptionalParameterSuffixes(routePath)
 		)
 
-		switch (method) {
-			case 'all':
+		if (method === 'use' && typeof pathOrHandler === 'function') {
+			this.hono.use(wrappedHandler)
+			return
+		}
+
+		const middlewareContexts = new WeakSet<Context>()
+		const middlewareHandler: MiddlewareHandler = (ctx, next) => {
+			if (middlewareContexts.has(ctx)) return next()
+			middlewareContexts.add(ctx)
+			return wrappedHandler(ctx, next)
+		}
+
+		for (const honoPath of new Set(normalizeHonoPaths(routePath))) {
+			if (method === 'all') {
 				this.hono.all(honoPath, wrappedHandler)
-				break
-			case 'get':
-				this.hono.get(honoPath, wrappedHandler)
-				break
-			case 'post':
-				this.hono.post(honoPath, wrappedHandler)
-				break
-			case 'put':
-				this.hono.put(honoPath, wrappedHandler)
-				break
-			case 'delete':
-				this.hono.delete(honoPath, wrappedHandler)
-				break
-			case 'use':
-				this.hono.use(honoPath, wrappedHandler)
-				break
-			case 'patch':
-				this.hono.patch(honoPath, wrappedHandler)
-				break
-			case 'options':
-				this.hono.options(honoPath, wrappedHandler)
-				break
-			/* v8 ignore next -- method is constrained by the private union type. */
-			default:
-				break
+				continue
+			}
+			if (method === 'use') {
+				this.hono.use(normalizeHonoMiddlewarePath(honoPath), middlewareHandler)
+				continue
+			}
+			if (method === 'head') {
+				this.headRoutePaths.add(honoPath)
+				this.hono.on('GET', honoPath, (ctx, next) =>
+					ctx.req.method === 'HEAD' ? wrappedHandler(ctx, next) : next()
+				)
+				continue
+			}
+
+			const handlerForMethod: MiddlewareHandler =
+				method === 'get'
+					? (ctx, next) =>
+							ctx.req.method === 'HEAD' && this.headRoutePaths.has(honoPath)
+								? next()
+								: wrappedHandler(ctx, next)
+					: wrappedHandler
+			this.hono.on(method.toUpperCase(), honoPath, handlerForMethod)
 		}
 	}
 
-	override all(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('all', pathOrHandler, handler)
+	override all(...args: RouteArguments) {
+		this.registerRoute('all', ...args)
 	}
 
-	override get(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('get', pathOrHandler, handler)
+	override get(...args: RouteArguments) {
+		this.registerRoute('get', ...args)
 	}
 
-	override post(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('post', pathOrHandler, handler)
+	override post(...args: RouteArguments) {
+		this.registerRoute('post', ...args)
 	}
 
-	override put(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('put', pathOrHandler, handler)
+	override put(...args: RouteArguments) {
+		this.registerRoute('put', ...args)
 	}
 
-	override delete(
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	) {
-		this.registerRoute('delete', pathOrHandler, handler)
+	override delete(...args: RouteArguments) {
+		this.registerRoute('delete', ...args)
 	}
 
-	override use(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('use', pathOrHandler, handler)
+	override use(...args: RouteArguments) {
+		this.registerRoute('use', ...args)
 	}
 
-	override patch(pathOrHandler: string | RouteHandler, handler?: RouteHandler) {
-		this.registerRoute('patch', pathOrHandler, handler)
+	override patch(...args: RouteArguments) {
+		this.registerRoute('patch', ...args)
 	}
 
-	override options(
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	) {
-		this.registerRoute('options', pathOrHandler, handler)
+	override options(...args: RouteArguments) {
+		this.registerRoute('options', ...args)
+	}
+
+	override head(...args: RouteArguments) {
+		this.registerRoute('head', ...args)
+	}
+
+	override search(...args: RouteArguments) {
+		this.registerRoute('search', ...args)
+	}
+
+	override propfind(...args: RouteArguments) {
+		this.registerRoute('propfind', ...args)
+	}
+
+	override proppatch(...args: RouteArguments) {
+		this.registerRoute('proppatch', ...args)
+	}
+
+	override mkcol(...args: RouteArguments) {
+		this.registerRoute('mkcol', ...args)
+	}
+
+	override copy(...args: RouteArguments) {
+		this.registerRoute('copy', ...args)
+	}
+
+	override move(...args: RouteArguments) {
+		this.registerRoute('move', ...args)
+	}
+
+	override lock(...args: RouteArguments) {
+		this.registerRoute('lock', ...args)
+	}
+
+	override unlock(...args: RouteArguments) {
+		this.registerRoute('unlock', ...args)
 	}
 
 	reply(ctx: Context, body: unknown, statusCode?: number) {
@@ -540,8 +742,11 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	) {
 		this.hono.notFound(async ctx => {
 			await handler(ctx.req as unknown as Request, ctx)
-			await this.status(ctx, HttpStatus.NOT_FOUND)
-			return getFinalizedResponse(ctx, 'Not Found')
+			if (!ctx.finalized) {
+				this.status(ctx, HttpStatus.NOT_FOUND)
+				return getFinalizedResponse(ctx, 'Not Found')
+			}
+			return getFinalizedResponse(ctx)
 		})
 	}
 
@@ -570,8 +775,13 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		ctx.res.headers.append(name, value)
 	}
 
-	getRequestHostname(ctx: Context) {
-		return ctx.req.header().host
+	getRequestHostname(requestOrContext: Context['req'] | Context) {
+		const request =
+			'req' in requestOrContext ? requestOrContext.req : requestOrContext
+		const host = request.header('host')
+		return host
+			? new URL(`http://${host}`).hostname
+			: new URL(request.url).hostname
 	}
 
 	getRequestMethod(request: Context['req']) {
@@ -579,7 +789,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	getRequestUrl(request: Context['req']) {
-		return request.url
+		const url = new URL(request.url)
+		return `${url.pathname}${url.search}`
 	}
 
 	enableCors(options: Parameters<typeof cors>[0]) {
@@ -624,11 +835,36 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		})
 	}
 
-	private normalizeRequestMetadata(ctx: Context) {
+	private normalizeRequestMetadata(
+		ctx: Context,
+		optionalParameterSuffixes: OptionalParameterSuffix[] = []
+	) {
 		const req = getNestHonoRequest(ctx.req)
+		this.attachRequestBridge(ctx)
 		const clientIp = extractClientIp(ctx, this.adapterOptions)
 		if (!req.ip && clientIp) req.ip = clientIp
-		req.headers = Object.fromEntries(ctx.req.raw.headers)
+		if (!req.headers) req.headers = Object.fromEntries(ctx.req.raw.headers)
+		const params = ctx.req.param()
+		for (const { name, suffix } of optionalParameterSuffixes
+			.slice()
+			.reverse()) {
+			const value = params[name]
+			if (value && value.length > suffix.length && value.endsWith(suffix))
+				params[name] = value.slice(0, -suffix.length)
+		}
+		req.params = params
+		if (typeof req.query === 'function' || !req.query) {
+			const queries = ctx.req.queries()
+			req.query = Object.fromEntries(
+				Object.entries(ctx.req.query()).map(([key, value]) => {
+					const queryValues = queries[key]
+					return [
+						key,
+						queryValues && queryValues.length > 1 ? queryValues : value,
+					]
+				})
+			)
+		}
 
 		const pathname = new URL(ctx.req.url).pathname
 		req.baseUrl = pathname
@@ -678,31 +914,32 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	createMiddlewareFactory(requestMethod: RequestMethod) {
 		return Promise.resolve((path: string, callback: Function) => {
-			const routeMethodsMap: Partial<
-				Record<RequestMethod, typeof this.hono.get>
-			> = {
-				[RequestMethod.ALL]: this.hono.all,
-				[RequestMethod.DELETE]: this.hono.delete,
-				[RequestMethod.GET]: this.hono.get,
-				[RequestMethod.OPTIONS]: this.hono.options,
-				[RequestMethod.PATCH]: this.hono.patch,
-				[RequestMethod.POST]: this.hono.post,
-				[RequestMethod.PUT]: this.hono.put,
-				[RequestMethod.HEAD]: this.hono.get,
-				[RequestMethod.SEARCH]: this.hono.get,
+			const isAllMethods =
+				requestMethod === RequestMethod.ALL || (requestMethod as number) === -1
+			const method = RequestMethod[requestMethod]
+			const optionalParameterSuffixes = getOptionalParameterSuffixes(path)
+			if (!(method || isAllMethods))
+				throw new Error(`Unsupported request method: ${requestMethod}`)
+
+			const middleware: MiddlewareHandler = async (ctx, next) => {
+				this.normalizeRequestMetadata(ctx, optionalParameterSuffixes)
+				const response = await this.invokeHandler(callback, ctx, next, true)
+				if (response instanceof Response) return response
 			}
 
-			const routeMethod = (
-				routeMethodsMap[requestMethod] || this.hono.get
-			).bind(this.hono)
-			routeMethod(
-				normalizeHonoPath(path),
-				async (ctx: Context, next: () => Promise<void>) => {
-					const req = getNestHonoRequest(ctx.req)
-					req.params = ctx.req.param()
-					await callback(ctx.req, ctx, next)
+			for (const honoPath of new Set(normalizeHonoPaths(path))) {
+				if (isAllMethods) {
+					this.hono.all(honoPath, middleware)
+					continue
 				}
-			)
+				if (requestMethod === RequestMethod.HEAD) {
+					this.hono.on('GET', honoPath, (ctx, next) =>
+						ctx.req.method === 'HEAD' ? middleware(ctx, next) : next()
+					)
+					continue
+				}
+				this.hono.on(method, honoPath, middleware)
+			}
 		})
 	}
 

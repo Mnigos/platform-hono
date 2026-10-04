@@ -59,15 +59,23 @@ describe('HonoAdapter', () => {
 		expect(useBodyParserSpy).toHaveBeenCalledTimes(4)
 	})
 
-	test('registers all HTTP route helpers', async () => {
+	test('registers all non-HEAD HTTP route helpers', async () => {
 		const adapter = new HonoAdapter()
 		const methods = [
-			'get',
-			'post',
-			'put',
+			'copy',
 			'delete',
-			'patch',
+			'get',
+			'lock',
+			'mkcol',
+			'move',
 			'options',
+			'patch',
+			'post',
+			'propfind',
+			'proppatch',
+			'put',
+			'search',
+			'unlock',
 		] as const
 
 		for (const method of methods) {
@@ -89,6 +97,23 @@ describe('HonoAdapter', () => {
 		await expect(
 			(await adapter.hono.request('/all', { method: 'POST' })).text()
 		).resolves.toBe('all')
+	})
+
+	test('registers explicit HEAD route helpers', async () => {
+		const adapter = new HonoAdapter()
+
+		adapter.get('/head', async (_req, ctx) => {
+			ctx.header('x-handler', 'get')
+			await adapter.reply(ctx, 'get')
+		})
+		adapter.head('/head', async (_req, ctx) => {
+			ctx.header('x-handler', 'head')
+			await adapter.reply(ctx, undefined, 204)
+		})
+
+		const headResponse = await adapter.hono.request('/head', { method: 'HEAD' })
+		expect(headResponse.status).toBe(204)
+		expect(headResponse.headers.get('x-handler')).toBe('head')
 	})
 
 	test('cancels GET response streams used for HEAD fallback', async () => {
@@ -151,6 +176,38 @@ describe('HonoAdapter', () => {
 		)
 	})
 
+	test('runs handler-only use middleware globally', async () => {
+		const adapter = new HonoAdapter()
+
+		adapter.use((_req, ctx, next) => {
+			ctx.header('x-global', 'yes')
+			next()
+		})
+		adapter.get('/nested', async (_req, ctx) => {
+			await adapter.reply(ctx, 'ok')
+		})
+
+		expect(
+			(await adapter.hono.request('/nested')).headers.get('x-global')
+		).toBe('yes')
+	})
+
+	test('preserves explicit global use wildcard paths', async () => {
+		const adapter = new HonoAdapter()
+
+		adapter.use('*', (_req, ctx, next) => {
+			ctx.header('x-global-wildcard', 'ran')
+			next()
+		})
+		adapter.get('/wildcard-target', async (_req, ctx) => {
+			await adapter.reply(ctx, 'ok')
+		})
+
+		const response = await adapter.hono.request('/wildcard-target')
+
+		expect(response.headers.get('x-global-wildcard')).toBe('ran')
+	})
+
 	test('preserves responses returned directly from route handlers', async () => {
 		const adapter = new HonoAdapter()
 
@@ -194,8 +251,9 @@ describe('HonoAdapter', () => {
 	test('runs use middleware before routes', async () => {
 		const adapter = new HonoAdapter()
 
-		adapter.use('/scoped/*', (_req, ctx) => {
+		adapter.use('/scoped', (_req, ctx, next) => {
 			ctx.header('x-middleware', 'ran')
+			setTimeout(next, 10)
 		})
 		adapter.get('/scoped/route', async (_req, ctx) => {
 			await adapter.reply(ctx, 'ok')
@@ -222,6 +280,7 @@ describe('HonoAdapter', () => {
 		})
 
 		expect(capturedRequest).toMatchObject({
+			baseUrl: '/users/123',
 			headers: expect.objectContaining({ host: 'example.test' }),
 			ip: '10.0.0.1',
 			params: { id: '123' },
@@ -245,6 +304,56 @@ describe('HonoAdapter', () => {
 		expect(capturedRequest).toMatchObject({
 			params: { path: 'world/who?' },
 		})
+	})
+
+	test('expands Nest optional route groups without corrupting the router', async () => {
+		const adapter = new HonoAdapter()
+
+		adapter.get('/users{/:id}', async (req, ctx) => {
+			await adapter.reply(ctx, getNestHonoRequest(req).params?.id ?? 'all')
+		})
+		adapter.get('/plain', async (_req, ctx) => {
+			await adapter.reply(ctx, 'plain')
+		})
+
+		await expect((await adapter.hono.request('/users')).text()).resolves.toBe(
+			'all'
+		)
+		await expect(
+			(await adapter.hono.request('/users/42')).text()
+		).resolves.toBe('42')
+		await expect((await adapter.hono.request('/plain')).text()).resolves.toBe(
+			'plain'
+		)
+	})
+
+	test('expands Nest optional literal suffixes after parameters', async () => {
+		const adapter = new HonoAdapter()
+
+		adapter.get('/file/:name{.json}', async (req, ctx) => {
+			await adapter.reply(ctx, getNestHonoRequest(req).params?.name)
+		})
+
+		await expect(
+			(await adapter.hono.request('/file/report')).text()
+		).resolves.toBe('report')
+		await expect(
+			(await adapter.hono.request('/file/report.json')).text()
+		).resolves.toBe('report')
+		await expect(
+			(await adapter.hono.request('/file/.json')).text()
+		).resolves.toBe('.json')
+	})
+
+	test('preserves Hono parameter constraints while expanding Nest groups', async () => {
+		const adapter = new HonoAdapter()
+
+		adapter.get('/numeric/:id{[0-9]+}', async (_req, ctx) => {
+			await adapter.reply(ctx, 'numeric')
+		})
+
+		expect((await adapter.hono.request('/numeric/123')).status).toBe(200)
+		expect((await adapter.hono.request('/numeric/abc')).status).toBe(404)
 	})
 
 	test('preserves request IP values that were already set upstream', async () => {
@@ -572,9 +681,6 @@ describe('HonoAdapter', () => {
 		const headFactory = await adapter.createMiddlewareFactory(
 			RequestMethod.HEAD
 		)
-		const fallbackFactory = await adapter.createMiddlewareFactory(
-			999 as RequestMethod
-		)
 
 		getFactory(
 			'/factory',
@@ -586,12 +692,6 @@ describe('HonoAdapter', () => {
 			'/head',
 			async (_req: unknown, ctx: Parameters<HonoAdapter['reply']>[0]) => {
 				await adapter.reply(ctx, 'head')
-			}
-		)
-		fallbackFactory(
-			'/fallback',
-			async (_req: unknown, ctx: Parameters<HonoAdapter['reply']>[0]) => {
-				await adapter.reply(ctx, 'fallback')
 			}
 		)
 		getFactory(
@@ -611,11 +711,89 @@ describe('HonoAdapter', () => {
 			(await adapter.hono.request('/head', { method: 'HEAD' })).status
 		).toBe(200)
 		await expect(
-			(await adapter.hono.request('/fallback')).text()
-		).resolves.toBe('fallback')
-		await expect(
 			(await adapter.hono.request('/wildcard/one/two')).text()
 		).resolves.toBe('one/two')
+		await expect(
+			adapter.createMiddlewareFactory(999 as RequestMethod)
+		).resolves.toBeTypeOf('function')
+		const unsupportedFactory = await adapter.createMiddlewareFactory(
+			999 as RequestMethod
+		)
+		expect(() => unsupportedFactory('/unsupported', () => undefined)).toThrow(
+			'Unsupported request method: 999'
+		)
+	})
+
+	test('awaits conventional Nest middleware and normalizes its request', async () => {
+		const adapter = new HonoAdapter()
+		const getFactory = await adapter.createMiddlewareFactory(RequestMethod.GET)
+		let query: NestHonoRequest['query']
+
+		getFactory(
+			'/middleware',
+			(req: NestHonoRequest, _ctx: unknown, next: () => void) => {
+				query = req.query
+				return setTimeout(next, 10)
+			}
+		)
+		adapter.get('/middleware', async (_req, ctx) => {
+			await Promise.resolve()
+			await adapter.reply(ctx, 'done')
+		})
+
+		const response = await adapter.hono.request('/middleware?tag=one&tag=two')
+
+		expect(response.status).toBe(200)
+		await expect(response.text()).resolves.toBe('done')
+		expect(query).toEqual({ tag: ['one', 'two'] })
+	})
+
+	test('propagates errors passed to Nest middleware next callbacks', async () => {
+		const adapter = new HonoAdapter()
+		const getFactory = await adapter.createMiddlewareFactory(RequestMethod.GET)
+		let routeCalled = false
+
+		getFactory(
+			'/blocked',
+			(_req: unknown, _ctx: unknown, next: (error?: unknown) => void) => {
+				next(new Error('blocked'))
+			}
+		)
+		adapter.get('/blocked', async (_req, ctx) => {
+			routeCalled = true
+			await adapter.reply(ctx, 'unsafe')
+		})
+		adapter.setErrorHandler(async (error, _req, ctx) => {
+			await adapter.reply(ctx, { message: error.message }, 418)
+		})
+
+		const response = await adapter.hono.request('/blocked')
+
+		expect(response.status).toBe(418)
+		await expect(response.json()).resolves.toEqual({ message: 'blocked' })
+		expect(routeCalled).toBe(false)
+	})
+
+	test('runs optional all-path Nest middleware once per request', async () => {
+		const adapter = new HonoAdapter()
+		const allFactory = await adapter.createMiddlewareFactory(RequestMethod.ALL)
+		let calls = 0
+
+		allFactory('/{*path}', (_req: unknown, _ctx: unknown, next: () => void) => {
+			calls += 1
+			next()
+		})
+		adapter.get('/', async (_req, ctx) => {
+			await adapter.reply(ctx, 'root')
+		})
+		adapter.get('/nested', async (_req, ctx) => {
+			await adapter.reply(ctx, 'nested')
+		})
+
+		expect((await adapter.hono.request('/')).status).toBe(200)
+		expect(calls).toBe(1)
+		expect((await adapter.hono.request('/nested')).status).toBe(200)
+		expect(calls).toBe(2)
 	})
 
 	test('returns request method, URL, adapter type, and unsupported method behavior', () => {
@@ -625,9 +803,7 @@ describe('HonoAdapter', () => {
 		})
 
 		expect(adapter.getRequestMethod(request as never)).toBe('POST')
-		expect(adapter.getRequestUrl(request as never)).toBe(
-			'https://example.test/path?x=1'
-		)
+		expect(adapter.getRequestUrl(request as never)).toBe('/path?x=1')
 		expect(adapter.getType()).toBe('hono')
 		expect(adapter.end()).toBeDefined()
 		expect(() => adapter.render()).toThrow('Method not implemented.')

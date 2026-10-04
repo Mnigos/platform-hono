@@ -242,7 +242,8 @@ The following Nest response features are intentionally deferred:
 | Nest `@Sse()` server-sent events | Supported |
 | Static assets | Supported |
 | CORS | Supported |
-| oRPC | Supported |
+| Standard and WebDAV HTTP method decorators | Supported |
+| oRPC | Not yet verified |
 | better-auth | Planned |
 | nestjs-better-auth | Planned |
 | Express/Fastify-style manual `@Res()` APIs | Deferred |

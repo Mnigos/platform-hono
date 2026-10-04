@@ -12,13 +12,17 @@ import {
 	type ExceptionFilter,
 	type ExecutionContext,
 	Get,
+	Head,
 	Header,
 	Headers,
 	HttpCode,
 	type INestApplication,
 	Injectable,
 	type MessageEvent,
+	type MiddlewareConsumer,
 	Module,
+	type NestMiddleware,
+	type NestModule,
 	Options,
 	Param,
 	Patch,
@@ -27,6 +31,7 @@ import {
 	Query,
 	Redirect,
 	Req,
+	RequestMethod,
 	Sse,
 	StreamableFile,
 	UseFilters,
@@ -43,6 +48,7 @@ interface CapturedRequest {
 	body?: unknown
 	guardBody?: unknown
 	headers?: Record<string, string>
+	middlewareRan?: boolean
 	raw?: Request
 	rawBody?: Buffer
 }
@@ -115,6 +121,22 @@ class TestExceptionFilter implements ExceptionFilter {
 	}
 }
 
+@Injectable()
+class TestMiddleware implements NestMiddleware {
+	use(request: CapturedRequest, _response: Context, next: () => void) {
+		request.middlewareRan = true
+		next()
+	}
+}
+
+@Controller({ host: 'example.test' })
+class HostController {
+	@Get('/hosted')
+	hosted() {
+		return { hosted: true }
+	}
+}
+
 @Controller()
 class TestController {
 	@Get('/hello/:id')
@@ -161,6 +183,17 @@ class TestController {
 		return
 	}
 
+	@Head('/resource/head')
+	@Header('x-head-handler', 'yes')
+	headResource() {
+		return
+	}
+
+	@Get('/optional{/:id}')
+	optional(@Param('id') id?: string) {
+		return { id: id ?? null }
+	}
+
 	@Post('/echo/nested')
 	echoNested(@Body() body: unknown) {
 		return { body }
@@ -191,6 +224,16 @@ class TestController {
 	@Post('/raw-upload')
 	async rawUpload(@Req() req: CapturedRequest) {
 		return { size: req.raw ? (await req.raw.arrayBuffer()).byteLength : 0 }
+	}
+
+	@Get('/middleware/included')
+	middlewareIncluded(@Req() req: CapturedRequest) {
+		return { middlewareRan: req.middlewareRan ?? false }
+	}
+
+	@Get('/middleware/excluded')
+	middlewareExcluded(@Req() req: CapturedRequest) {
+		return { middlewareRan: req.middlewareRan ?? false }
 	}
 
 	@Get('/ip')
@@ -327,10 +370,17 @@ class TestController {
 }
 
 @Module({
-	controllers: [TestController],
-	providers: [RequestBodyCompatibilityGuard],
+	controllers: [HostController, TestController],
+	providers: [RequestBodyCompatibilityGuard, TestMiddleware],
 })
-class TestModule {}
+class TestModule implements NestModule {
+	configure(consumer: MiddlewareConsumer) {
+		consumer
+			.apply(TestMiddleware)
+			.exclude({ path: '/middleware/excluded', method: RequestMethod.GET })
+			.forRoutes('/middleware/included', '/middleware/excluded')
+	}
+}
 
 export async function startApp(
 	adapter = new HonoAdapter(),
