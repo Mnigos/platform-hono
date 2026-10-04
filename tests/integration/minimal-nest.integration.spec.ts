@@ -2,10 +2,27 @@ import { mkdir, writeFile } from 'node:fs/promises'
 import { request } from 'node:http'
 import { join } from 'node:path'
 import { HonoAdapter } from '../../src'
-import { startApp } from './fixtures/minimal-nest-app'
+import {
+	getActiveSseSubscriptions,
+	startApp,
+} from './fixtures/minimal-nest-app'
 
 function delay(ms: number) {
 	return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function abortAfterFirstChunk(url: string) {
+	return new Promise<void>((resolve, reject) => {
+		const clientRequest = request(url, response => {
+			response.once('data', () => {
+				response.destroy()
+				clientRequest.destroy()
+				resolve()
+			})
+		})
+		clientRequest.on('error', reject)
+		clientRequest.end()
+	})
 }
 
 function getWithChunkedBody(url: string, body: string) {
@@ -199,6 +216,30 @@ describe('minimal Nest integration', () => {
 			await expect(multipartResponse.json()).resolves.toMatchObject({
 				body: { name: 'Ada' },
 			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('parses structured JSON request and response media types', async () => {
+		const app = await startApp()
+
+		try {
+			const requestResponse = await fetch(`${app.baseUrl}/echo`, {
+				body: JSON.stringify({ structured: true }),
+				headers: { 'content-type': 'application/problem+json' },
+				method: 'POST',
+			})
+			expect(requestResponse.status).toBe(201)
+			await expect(requestResponse.json()).resolves.toEqual({
+				body: { structured: true },
+			})
+
+			const response = await fetch(`${app.baseUrl}/returns/problem`)
+			expect(response.headers.get('content-type')).toContain(
+				'application/problem+json'
+			)
+			await expect(response.json()).resolves.toEqual({ detail: 'problem' })
 		} finally {
 			await app.close()
 		}
@@ -479,6 +520,33 @@ describe('minimal Nest integration', () => {
 			expect(body).toContain('data: {"hello":"one"}')
 			expect(body).toContain('id: custom')
 			expect(body).toContain('data: two')
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('tears down Nest SSE subscriptions after client cancellation', async () => {
+		const app = await startApp()
+
+		try {
+			await abortAfterFirstChunk(`${app.baseUrl}/events/infinite`)
+			await delay(30)
+			expect(getActiveSseSubscriptions()).toBe(0)
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('tears down GET SSE streams used for HEAD fallback', async () => {
+		const app = await startApp()
+
+		try {
+			const response = await fetch(`${app.baseUrl}/events/infinite`, {
+				method: 'HEAD',
+			})
+			expect(response.status).toBe(200)
+			await delay(30)
+			expect(getActiveSseSubscriptions()).toBe(0)
 		} finally {
 			await app.close()
 		}
