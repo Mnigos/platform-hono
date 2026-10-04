@@ -620,13 +620,16 @@ describe('minimal Nest integration', () => {
 
 	test('serves CORS preflight and static assets over HTTP', async () => {
 		const staticRoot = join(process.cwd(), '.cache', 'integration-static')
-		await mkdir(join(staticRoot, 'assets'), { recursive: true })
-		await writeFile(join(staticRoot, 'assets', 'asset.txt'), 'asset-body')
+		await mkdir(staticRoot, { recursive: true })
+		await writeFile(join(staticRoot, 'asset.txt'), 'asset-body')
 
-		const adapter = new HonoAdapter()
-		const app = await startApp(adapter, {}, nestApp => {
-			nestApp.enableCors({ origin: 'https://example.test' })
-			adapter.useStaticAssets('/assets/*', { root: staticRoot })
+		const app = await startApp(new HonoAdapter(), {}, nestApp => {
+			nestApp.enableCors({
+				allowedHeaders: ['content-type'],
+				methods: ['POST'],
+				origin: 'https://example.test',
+			})
+			nestApp.useStaticAssets(staticRoot, { prefix: '/assets' })
 		})
 
 		try {
@@ -641,10 +644,22 @@ describe('minimal Nest integration', () => {
 			expect(corsResponse.headers.get('access-control-allow-origin')).toBe(
 				'https://example.test'
 			)
+			expect(corsResponse.headers.get('access-control-allow-methods')).toBe(
+				'POST'
+			)
+			expect(corsResponse.headers.get('access-control-allow-headers')).toBe(
+				'content-type'
+			)
 
 			const staticResponse = await fetch(`${app.baseUrl}/assets/asset.txt`)
 			expect(staticResponse.status).toBe(200)
 			await expect(staticResponse.text()).resolves.toBe('asset-body')
+
+			const postStaticResponse = await fetch(
+				`${app.baseUrl}/assets/asset.txt`,
+				{ method: 'POST' }
+			)
+			expect(postStaticResponse.status).toBe(404)
 		} finally {
 			await app.close()
 		}
