@@ -11,6 +11,25 @@ function delay(ms: number) {
 	return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+function getWithHost(url: string, host: string) {
+	return new Promise<{ body: string; statusCode?: number }>(
+		(resolve, reject) => {
+			const clientRequest = request(url, { headers: { host } }, response => {
+				const chunks: Buffer[] = []
+				response.on('data', chunk => chunks.push(Buffer.from(chunk)))
+				response.on('end', () => {
+					resolve({
+						body: Buffer.concat(chunks).toString('utf8'),
+						statusCode: response.statusCode,
+					})
+				})
+			})
+			clientRequest.on('error', reject)
+			clientRequest.end()
+		}
+	)
+}
+
 function abortAfterFirstChunk(url: string) {
 	return new Promise<void>((resolve, reject) => {
 		const clientRequest = request(url, response => {
@@ -53,6 +72,28 @@ describe('minimal Nest integration', () => {
 				id: '42',
 				query: 'search',
 			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('supports host-scoped controllers and optional Nest routes', async () => {
+		const app = await startApp()
+
+		try {
+			const hostResponse = await getWithHost(
+				`${app.baseUrl}/hosted`,
+				'example.test'
+			)
+			expect(hostResponse.statusCode).toBe(200)
+			expect(JSON.parse(hostResponse.body)).toEqual({ hosted: true })
+
+			await expect(
+				(await fetch(`${app.baseUrl}/optional`)).json()
+			).resolves.toEqual({ id: null })
+			await expect(
+				(await fetch(`${app.baseUrl}/optional/42`)).json()
+			).resolves.toEqual({ id: '42' })
 		} finally {
 			await app.close()
 		}
@@ -141,7 +182,7 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
-	test('serves PUT, PATCH, DELETE, and OPTIONS routes over HTTP', async () => {
+	test('serves PUT, PATCH, DELETE, HEAD, and OPTIONS routes over HTTP', async () => {
 		const app = await startApp()
 
 		try {
@@ -177,6 +218,12 @@ describe('minimal Nest integration', () => {
 				method: 'OPTIONS',
 			})
 			expect(optionsResponse.status).toBe(204)
+
+			const headResponse = await fetch(`${app.baseUrl}/resource/head`, {
+				method: 'HEAD',
+			})
+			expect(headResponse.status).toBe(200)
+			expect(headResponse.headers.get('x-head-handler')).toBe('yes')
 		} finally {
 			await app.close()
 		}
@@ -339,6 +386,21 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
+	test('awaits Nest middleware and honors route exclusions', async () => {
+		const app = await startApp()
+
+		try {
+			await expect(
+				(await fetch(`${app.baseUrl}/middleware/included`)).json()
+			).resolves.toEqual({ middlewareRan: true })
+			await expect(
+				(await fetch(`${app.baseUrl}/middleware/excluded`)).json()
+			).resolves.toEqual({ middlewareRan: false })
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('returns Nest exception and custom exception filter responses over HTTP', async () => {
 		const app = await startApp()
 
@@ -381,7 +443,11 @@ describe('minimal Nest integration', () => {
 
 			const notFoundResponse = await fetch(`${app.baseUrl}/missing`)
 			expect(notFoundResponse.status).toBe(404)
-			await expect(notFoundResponse.text()).resolves.toBe('Not Found')
+			await expect(notFoundResponse.json()).resolves.toEqual({
+				error: 'Not Found',
+				message: 'Cannot GET /missing',
+				statusCode: 404,
+			})
 		} finally {
 			await app.close()
 		}
