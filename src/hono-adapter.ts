@@ -134,7 +134,7 @@ interface HonoSseWritable extends PassThrough {
 	) => HonoSseWritable
 }
 
-const BODY_LIMIT_REGEX = /^\s*(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?\s*$/i
+const BODY_LIMIT_REGEX = /^\s*(\d*\.?\d+)\s*(b|kb|mb|gb|tb|pb)?\s*$/i
 const HONO_CONSTRAINT_MARKER_REGEX = /[\\[\]()+*?|^$]/
 const HONO_PARAMETER_SUFFIX_REGEX = /:[A-Za-z_$][\w$]*$/
 const HONO_WILDCARD_SUFFIX_REGEX = /:[A-Za-z_$][\w$]*\{(?:\.\*|\.\+)\}$/
@@ -457,7 +457,14 @@ function parseBodyLimit(limit: number | string | undefined) {
 	if (limit === undefined) return
 	const match = limit.match(BODY_LIMIT_REGEX)
 	if (!match) throw new Error(`Invalid body parser limit: ${limit}`)
-	const multipliers = { b: 1, gb: 1024 ** 3, kb: 1024, mb: 1024 ** 2 }
+	const multipliers = {
+		b: 1,
+		gb: 1024 ** 3,
+		kb: 1024,
+		mb: 1024 ** 2,
+		pb: 1024 ** 5,
+		tb: 1024 ** 4,
+	}
 	const unit = (match[2]?.toLowerCase() ?? 'b') as keyof typeof multipliers
 	return Math.floor(Number(match[1]) * multipliers[unit])
 }

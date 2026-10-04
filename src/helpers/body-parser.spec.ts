@@ -185,6 +185,26 @@ describe('body parser helpers', () => {
 		).rejects.toBeInstanceOf(PayloadTooLargeException)
 	})
 
+	test('rejects aborted form uploads as bad requests', async () => {
+		const ctx = createContext({
+			headers: { 'content-type': 'application/x-www-form-urlencoded' },
+		})
+		ctx.req.raw = new Request('http://localhost/parse', {
+			body: new ReadableStream({
+				start(controller) {
+					controller.error(new Error('aborted'))
+				},
+			}),
+			duplex: 'half',
+			headers: ctx.req.raw.headers,
+			method: 'POST',
+		} as RequestInit & { duplex: 'half' })
+
+		await expect(parseRequestBody(ctx, false)).rejects.toBeInstanceOf(
+			BadRequestException
+		)
+	})
+
 	test('rejects malformed JSON and form bodies as bad requests', async () => {
 		await expect(
 			parse(
