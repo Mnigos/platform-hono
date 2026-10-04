@@ -461,6 +461,7 @@ describe('HonoAdapter', () => {
 		['numeric', 3, 'hello', true],
 		['string unit', { limit: '3b' }, 'hello', false],
 		['zero-byte', { limit: '0b' }, 'x', false],
+		['fractional', { limit: '.004kb' }, 'hello', false],
 	])('enforces %s Nest body parser limits', async (_case, limit, body, scoped) => {
 		const adapter = new HonoAdapter()
 
@@ -494,7 +495,7 @@ describe('HonoAdapter', () => {
 	})
 
 	test.each([
-		'5tb',
+		'5eb',
 		'10 mib',
 		'large',
 	])('rejects invalid Nest body parser limit %s', limit => {

@@ -134,15 +134,19 @@ async function parseSupportedRequestBody(
 ) {
 	const req = getNestHonoRequest(ctx.req)
 	const mediaType = getMediaType(contentType)
-	const bodyBuffer = await ctx.req.raw.arrayBuffer()
+	const isFormBody =
+		!isRawParser &&
+		(mediaType === 'multipart/form-data' ||
+			mediaType === 'application/x-www-form-urlencoded')
+	const bodyBuffer = await ctx.req.raw.arrayBuffer().catch(error => {
+		if (isFormBody) throw new BadRequestException('Malformed request body')
+		throw error
+	})
 	const bodyBytes = Buffer.from(bodyBuffer)
 	if (rawBody) req.rawBody = bodyBytes
 
 	if (isRawParser) req.body = bodyBytes
-	else if (
-		mediaType === 'multipart/form-data' ||
-		mediaType === 'application/x-www-form-urlencoded'
-	) {
+	else if (isFormBody) {
 		req.body = await new Response(bodyBuffer, {
 			headers: { 'content-type': contentType ?? '' },
 		})
