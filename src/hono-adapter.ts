@@ -134,6 +134,12 @@ interface HonoSseWritable extends PassThrough {
 	) => HonoSseWritable
 }
 
+const DEFAULT_PARSER_TYPES = [
+	'urlencoded',
+	'json',
+	'text',
+	'multipart/form-data',
+] as const
 const BODY_LIMIT_REGEX = /^\s*(\d*\.?\d+)\s*(b|kb|mb|gb|tb|pb)?\s*$/i
 const HONO_CONSTRAINT_MARKER_REGEX = /[\\[\]()+*?|^$]/
 const HONO_PARAMETER_SUFFIX_REGEX = /:[A-Za-z_$][\w$]*$/
@@ -474,7 +480,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	Context['req'],
 	Context
 > {
-	private _isParserRegistered = false
+	private readonly registeredParserTypes = new Set<string>()
 	private readonly adapterOptions: HonoAdapterOptions
 	private readonly logger = new Logger('HonoAdapter')
 	private forceCloseConnections = false
@@ -490,7 +496,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	get isParserRegistered() {
-		return this._isParserRegistered
+		return this.registeredParserTypes.size > 0
 	}
 
 	private getRouteAndHandler(
@@ -1002,7 +1008,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		this.hono.use(
 			bodyLimit ? (ctx, next) => bodyLimit(ctx, () => parse(ctx, next)) : parse
 		)
-		this._isParserRegistered = true
+		this.registeredParserTypes.add(type)
 	}
 
 	close(): Promise<void> {
@@ -1089,13 +1095,12 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	registerParserMiddleware(_prefix?: string, rawBody?: boolean) {
-		if (this._isParserRegistered) return
+		const missingTypes = DEFAULT_PARSER_TYPES.filter(
+			type => !this.registeredParserTypes.has(type)
+		)
+		if (missingTypes.length === 0) return
 		this.logger.log('Registering parser middleware')
-		this.useBodyParser('urlencoded', rawBody ?? false)
-		this.useBodyParser('json', rawBody ?? false)
-		this.useBodyParser('text', rawBody ?? false)
-		this.useBodyParser('multipart/form-data', rawBody ?? false)
-		this._isParserRegistered = true
+		for (const type of missingTypes) this.useBodyParser(type, rawBody ?? false)
 	}
 
 	createMiddlewareFactory(requestMethod: RequestMethod) {

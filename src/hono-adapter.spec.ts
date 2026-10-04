@@ -62,6 +62,22 @@ describe('HonoAdapter', () => {
 		expect(useBodyParserSpy).toHaveBeenCalledTimes(4)
 	})
 
+	test('registers missing default parsers after a custom parser', () => {
+		const adapter = new HonoAdapter()
+		const useBodyParserSpy = vi.spyOn(adapter, 'useBodyParser')
+
+		adapter.useBodyParser('text', false)
+		adapter.registerParserMiddleware()
+		adapter.registerParserMiddleware()
+
+		expect(useBodyParserSpy.mock.calls.map(([type]) => type)).toEqual([
+			'text',
+			'urlencoded',
+			'json',
+			'multipart/form-data',
+		])
+	})
+
 	test('registers all non-HEAD HTTP route helpers', async () => {
 		const adapter = new HonoAdapter()
 		const methods = [
