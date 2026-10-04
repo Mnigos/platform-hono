@@ -4,6 +4,7 @@ import type { Server as HttpsServer } from 'node:https'
 import { PassThrough } from 'node:stream'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Logger, RequestMethod } from '@nestjs/common'
+import type { CustomOrigin } from '@nestjs/common/interfaces/external/cors-options.interface'
 import type { Context } from 'hono'
 import { getNestHonoRequest, type NestHonoRequest } from './helpers/request'
 import { HonoAdapter } from './hono-adapter'
@@ -140,12 +141,14 @@ describe('HonoAdapter', () => {
 		['HEAD route first', false],
 	])('falls back to GET when explicit HEAD routes reject the request (%s)', async (_case, getFirst) => {
 		const adapter = new HonoAdapter()
+		const handlerCalls = new Map<string, number>()
 		const registerHostRoute = (
 			method: 'get' | 'head',
 			host: string,
 			handlerName: string
 		) => {
 			adapter[method]('/hosted', async (req, ctx, next) => {
+				handlerCalls.set(handlerName, (handlerCalls.get(handlerName) ?? 0) + 1)
 				if (req.header('host') !== host) {
 					await next()
 					return
@@ -169,25 +172,28 @@ describe('HonoAdapter', () => {
 			registerHostB()
 		}
 
-		const hostBHeadResponse = await adapter.hono.request('/hosted', {
-			headers: { host: 'b.test' },
-			method: 'HEAD',
-		})
+		const requestHosted = (host: string, method: string) => {
+			handlerCalls.clear()
+			return adapter.hono.request('/hosted', { headers: { host }, method })
+		}
+
+		const hostBHeadResponse = await requestHosted('b.test', 'HEAD')
 		expect(hostBHeadResponse.status).toBe(200)
 		expect(hostBHeadResponse.headers.get('x-handler')).toBe('b-get')
+		expect(handlerCalls.get('a-head')).toBe(1)
+		expect(handlerCalls.get('b-get')).toBe(1)
+		expect(Math.max(...handlerCalls.values())).toBe(1)
 
-		const hostAHeadResponse = await adapter.hono.request('/hosted', {
-			headers: { host: 'a.test' },
-			method: 'HEAD',
-		})
+		const hostAHeadResponse = await requestHosted('a.test', 'HEAD')
 		expect(hostAHeadResponse.status).toBe(200)
 		expect(hostAHeadResponse.headers.get('x-handler')).toBe('a-head')
+		expect(Object.fromEntries(handlerCalls)).toEqual({ 'a-head': 1 })
 
-		await expect(
-			(
-				await adapter.hono.request('/hosted', { headers: { host: 'a.test' } })
-			).text()
-		).resolves.toBe('a-get')
+		const hostAGetResponse = await requestHosted('a.test', 'GET')
+		await expect(hostAGetResponse.text()).resolves.toBe('a-get')
+		expect(handlerCalls.get('a-get')).toBe(1)
+		expect(handlerCalls.has('a-head')).toBe(false)
+		expect(Math.max(...handlerCalls.values())).toBe(1)
 	})
 
 	test('cancels GET response streams used for HEAD fallback', async () => {
@@ -882,6 +888,61 @@ describe('HonoAdapter', () => {
 		expect(response.status).toBe(200)
 		expect(response.headers.has('access-control-allow-origin')).toBe(false)
 		await expect(response.text()).resolves.toBe('controller')
+	})
+
+	test.each<[string, CustomOrigin, string, string | null]>([
+		[
+			'true',
+			(_origin, callback) => callback(null, true),
+			'https://a.test',
+			'https://a.test',
+		],
+		[
+			'wildcard',
+			(_origin, callback) => callback(null, '*'),
+			'https://a.test',
+			'*',
+		],
+		[
+			'matching string',
+			(_origin, callback) => callback(null, 'https://a.test'),
+			'https://a.test',
+			'https://a.test',
+		],
+		[
+			'mismatched string',
+			(_origin, callback) => callback(null, 'https://a.test'),
+			'https://b.test',
+			null,
+		],
+		[
+			'matching RegExp',
+			(_origin, callback) => callback(null, TRUSTED_ORIGIN_REGEX),
+			'https://trusted.test',
+			'https://trusted.test',
+		],
+		[
+			'mismatched RegExp',
+			(_origin, callback) => callback(null, TRUSTED_ORIGIN_REGEX),
+			'https://attacker.test',
+			null,
+		],
+	])('applies CORS callback origin %s', async (_case, origin, requestOrigin, allowedOrigin) => {
+		const adapter = new HonoAdapter()
+		adapter.enableCors({ origin })
+
+		const response = await adapter.hono.request('/target', {
+			headers: {
+				'access-control-request-method': 'POST',
+				origin: requestOrigin,
+			},
+			method: 'OPTIONS',
+		})
+
+		expect(response.status).toBe(204)
+		expect(response.headers.get('access-control-allow-origin')).toBe(
+			allowedOrigin
+		)
 	})
 
 	test('translates the standard Nest static root and prefix', () => {
