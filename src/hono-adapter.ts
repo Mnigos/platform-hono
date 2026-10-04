@@ -44,6 +44,7 @@ import {
 	finalizeResponse,
 	getFinalizedResponse,
 	isJsonContentType,
+	onResponseFinalized,
 } from './helpers/response'
 import type { HonoAdapterOptions } from './options'
 
@@ -92,6 +93,7 @@ interface NodeRequestBindings {
 		on: (event: string, listener: (...args: unknown[]) => void) => unknown
 		socket?: NodeSocketLike
 	}
+	outgoing?: NodeSocketLike
 }
 
 interface NodeSocketLike {
@@ -601,7 +603,9 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			!(response instanceof Response) &&
 			!ctx.finalized
 		) {
+			const removeFinalizeListener = onResponseFinalized(ctx, notifyNextCall)
 			await nextCalled
+			removeFinalizeListener()
 		}
 		if (nextPromise) await nextPromise
 		return response
@@ -610,7 +614,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	private attachRequestBridge(ctx: Context) {
 		const req = getNestHonoRequest(ctx.req)
 		const rawRequest = ctx.req.raw as Request & RequestEventBridge
-		const incoming = (ctx.env as NodeRequestBindings | undefined)?.incoming
+		const { incoming, outgoing } =
+			(ctx.env as NodeRequestBindings | undefined) ?? {}
 		if (incoming?.socket) {
 			const sseContext = ctx as HonoSseContext
 			const requestSocketBridge =
@@ -633,6 +638,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 				signal.removeEventListener('abort', invokeListener)
 				socket?.removeListener('close', invokeListener)
 				sseResponse?.removeListener('close', invokeListener)
+				outgoing?.removeListener('close', invokeListener)
 			}
 			const invokeListener = (...args: unknown[]) => {
 				if (called) return
@@ -645,6 +651,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 				signal.addEventListener('abort', invokeListener, { once: true })
 				socket?.once('close', invokeListener)
 				sseResponse?.once('close', invokeListener)
+				outgoing?.once('close', invokeListener)
 			}
 			return req
 		}

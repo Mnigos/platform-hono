@@ -871,6 +871,26 @@ describe('HonoAdapter', () => {
 		expect(query).toEqual({ tag: ['one', 'two'] })
 	})
 
+	test('returns delayed Nest middleware replies without next calls', async () => {
+		const adapter = new HonoAdapter()
+		const getFactory = await adapter.createMiddlewareFactory(RequestMethod.GET)
+		let routeCalled = false
+
+		getFactory('/delayed', (_req: unknown, ctx: Context) => {
+			setTimeout(() => adapter.reply(ctx, 'delayed', 403), 10)
+		})
+		adapter.get('/delayed', async (_req, ctx) => {
+			routeCalled = true
+			await adapter.reply(ctx, 'route')
+		})
+
+		const response = await adapter.hono.request('/delayed')
+
+		expect(response.status).toBe(403)
+		await expect(response.text()).resolves.toBe('delayed')
+		expect(routeCalled).toBe(false)
+	}, 1000)
+
 	test('propagates errors passed to Nest middleware next callbacks', async () => {
 		const adapter = new HonoAdapter()
 		const getFactory = await adapter.createMiddlewareFactory(RequestMethod.GET)

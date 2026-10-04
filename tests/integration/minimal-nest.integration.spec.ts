@@ -1,9 +1,11 @@
 import { mkdir, writeFile } from 'node:fs/promises'
-import { request } from 'node:http'
+import { Agent, request, type Server } from 'node:http'
+import type { Socket } from 'node:net'
 import { join } from 'node:path'
 import { HonoAdapter } from '../../src'
 import {
 	getActiveSseSubscriptions,
+	getRequestCloseCalls,
 	startApp,
 } from './fixtures/minimal-nest-app'
 
@@ -45,6 +47,18 @@ function abortAfterFirstChunk(url: string) {
 				clientRequest.destroy()
 				resolve()
 			})
+		})
+		clientRequest.on('error', reject)
+		clientRequest.end()
+	})
+}
+
+function getWithAgent(url: string, agent: Agent) {
+	return new Promise<number | undefined>((resolve, reject) => {
+		const clientRequest = request(url, { agent }, response => {
+			response.resume()
+			response.on('error', reject)
+			response.on('end', () => resolve(response.statusCode))
 		})
 		clientRequest.on('error', reject)
 		clientRequest.end()
@@ -638,6 +652,41 @@ describe('minimal Nest integration', () => {
 			await delay(30)
 			expect(getActiveSseSubscriptions()).toBe(0)
 		} finally {
+			await app.close()
+		}
+	})
+
+	test('releases request close listeners on keep-alive sockets after each response', async () => {
+		const app = await startApp()
+		const agent = new Agent({ keepAlive: true, maxSockets: 1 })
+		const sockets: Socket[] = []
+		;(app.adapter.getHttpServer() as Server).on('connection', socket => {
+			sockets.push(socket)
+		})
+		const initialCloseCalls = getRequestCloseCalls()
+
+		try {
+			await expect(
+				getWithAgent(`${app.baseUrl}/request-close`, agent)
+			).resolves.toBe(200)
+			const [socket] = sockets
+			if (!socket) throw new Error('Expected a server socket')
+			const closeListenerCount = socket.listenerCount('close')
+
+			for (let index = 0; index < 11; index += 1) {
+				await expect(
+					getWithAgent(`${app.baseUrl}/request-close`, agent)
+				).resolves.toBe(200)
+			}
+			await delay(10)
+
+			expect(sockets).toHaveLength(1)
+			expect(socket.listenerCount('close')).toBeLessThanOrEqual(
+				closeListenerCount
+			)
+			expect(getRequestCloseCalls() - initialCloseCalls).toBe(12)
+		} finally {
+			agent.destroy()
 			await app.close()
 		}
 	})
