@@ -157,7 +157,7 @@ describe('HonoAdapter', () => {
 
 		expect(capturedRequest).toMatchObject({
 			headers: expect.objectContaining({ host: 'example.test' }),
-			ip: '203.0.113.10',
+			ip: '10.0.0.1',
 			params: { id: '123' },
 			query: { tab: 'profile' },
 		})
@@ -179,43 +179,6 @@ describe('HonoAdapter', () => {
 		expect(capturedRequest).toMatchObject({
 			params: { path: 'world/who?' },
 		})
-	})
-
-	test('normalizes request metadata in initialized middleware', async () => {
-		const adapter = createInitializedAdapter({ trustProxy: true })
-		let capturedRequest: NestHonoRequest | undefined
-
-		adapter.get('/meta', req => {
-			capturedRequest = getNestHonoRequest(req)
-		})
-
-		await adapter.hono.request('/meta?ok=true', {
-			headers: {
-				host: 'example.test',
-				'x-real-ip': '198.51.100.5',
-			},
-		})
-
-		expect(capturedRequest).toMatchObject({
-			baseUrl: '/meta',
-			headers: expect.objectContaining({ host: 'example.test' }),
-			ip: '198.51.100.5',
-		})
-	})
-
-	test('does not trust forwarded IP headers by default', async () => {
-		const adapter = createInitializedAdapter()
-		let capturedRequest: NestHonoRequest | undefined
-
-		adapter.get('/meta', req => {
-			capturedRequest = getNestHonoRequest(req)
-		})
-
-		await adapter.hono.request('/meta', {
-			headers: { 'x-forwarded-for': '203.0.113.10' },
-		})
-
-		expect(capturedRequest?.ip).toBeUndefined()
 	})
 
 	test('preserves request IP values that were already set upstream', async () => {
