@@ -134,36 +134,32 @@ async function parseSupportedRequestBody(
 ) {
 	const req = getNestHonoRequest(ctx.req)
 	const mediaType = getMediaType(contentType)
+	const bodyBuffer = await ctx.req.raw.arrayBuffer()
+	const bodyBytes = Buffer.from(bodyBuffer)
+	if (rawBody) req.rawBody = bodyBytes
 
-	if (isRawParser) {
-		const bodyBytes = Buffer.from(await ctx.req.raw.arrayBuffer())
-		req.body = bodyBytes
-		if (rawBody) req.rawBody = bodyBytes
-	} else if (
+	if (isRawParser) req.body = bodyBytes
+	else if (
 		mediaType === 'multipart/form-data' ||
 		mediaType === 'application/x-www-form-urlencoded'
 	) {
-		req.body = await ctx.req.raw
+		req.body = await new Response(bodyBuffer, {
+			headers: { 'content-type': contentType ?? '' },
+		})
 			.formData()
 			.then(convertFormData)
 			.catch(() => {
 				throw new BadRequestException('Malformed request body')
 			})
 	} else if (isJsonMediaType(mediaType)) {
-		const bodyBytes = Buffer.from(await ctx.req.raw.arrayBuffer())
 		const bodyText = new TextDecoder().decode(bodyBytes)
-		if (rawBody) req.rawBody = bodyBytes
 		try {
 			req.body = bodyText ? JSON.parse(bodyText) : {}
 		} catch {
 			throw new BadRequestException('Malformed JSON body')
 		}
-	} else if (mediaType?.startsWith('text/')) {
-		const bodyBytes = Buffer.from(await ctx.req.raw.arrayBuffer())
-		const bodyText = new TextDecoder().decode(bodyBytes)
-		if (rawBody) req.rawBody = bodyBytes
-		req.body = bodyText
-	}
+	} else if (mediaType?.startsWith('text/'))
+		req.body = new TextDecoder().decode(bodyBytes)
 }
 
 interface FormDataLike {

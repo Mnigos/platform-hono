@@ -115,6 +115,25 @@ describe('body parser helpers', () => {
 		expect(req.rawBody).toEqual(Buffer.from('hello'))
 	})
 
+	test.each<[string, string, string]>([
+		['URL-encoded', 'name=Ada', 'application/x-www-form-urlencoded'],
+		[
+			'multipart',
+			'--test\r\nContent-Disposition: form-data; name="name"\r\n\r\nAda\r\n--test--\r\n',
+			'multipart/form-data; boundary=test',
+		],
+	])('parses %s form bodies and raw bodies', async (_case, bodyText, contentType) => {
+		const req = await parse(
+			createContext({ bodyText, headers: { 'content-type': contentType } }),
+			{},
+			true
+		)
+
+		expect(req.body).toEqual({ name: 'Ada' })
+		expect(req.rawBody).toEqual(Buffer.from(bodyText))
+		await expect(req.raw.text()).resolves.toBe(bodyText)
+	})
+
 	test.each<[string, string, string, unknown]>([
 		[
 			'structured JSON',

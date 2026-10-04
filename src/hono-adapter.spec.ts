@@ -493,6 +493,16 @@ describe('HonoAdapter', () => {
 		}
 	})
 
+	test.each([
+		'5tb',
+		'10 mib',
+		'large',
+	])('rejects invalid Nest body parser limit %s', limit => {
+		expect(() =>
+			new HonoAdapter().useBodyParser('json', false, { limit })
+		).toThrow(`Invalid body parser limit: ${limit}`)
+	})
+
 	test('replies with JSON, text, buffers, empty bodies, and prebuilt responses', async () => {
 		const adapter = new HonoAdapter()
 
