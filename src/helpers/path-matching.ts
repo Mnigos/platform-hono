@@ -1,4 +1,4 @@
-import type { RequestSizeLimit } from '../options.js'
+import type { RequestSizeLimit } from '../options'
 
 /**
  * Selects the most specific matching request size limit so broad upload limits

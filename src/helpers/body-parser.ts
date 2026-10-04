@@ -5,8 +5,8 @@ import {
 	DEFAULT_BODY_LIMIT,
 	type HonoAdapterOptions,
 	type RequestSizeLimit,
-} from '../options.js'
-import { getNestHonoRequest } from './request.js'
+} from '../options'
+import { getNestHonoRequest } from './request'
 
 export async function parseRequestBody(
 	ctx: Context,

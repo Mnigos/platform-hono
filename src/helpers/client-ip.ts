@@ -4,7 +4,7 @@ import type { Context } from 'hono'
 import {
 	DEFAULT_TRUSTED_PROXY_HEADERS,
 	type HonoAdapterOptions,
-} from '../options.js'
+} from '../options'
 
 const QUOTED_VALUE_REGEX = /^"|"$/g
 const BRACKETED_IP_WITH_OPTIONAL_PORT_REGEX = /^\[(.*)](?::\d+)?$/

@@ -22,15 +22,12 @@ import {
 	RequestMethod,
 	type VersioningOptions,
 } from '@nestjs/common'
+import type { RequestHandler } from '@nestjs/common/interfaces'
 import type {
 	CorsOptions,
 	CorsOptionsDelegate,
 	CustomOrigin,
-} from '@nestjs/common/interfaces/external/cors-options.interface.js'
-import type {
-	RequestHandler,
-	VersionValue,
-} from '@nestjs/common/interfaces/index.js'
+} from '@nestjs/common/interfaces/external/cors-options.interface'
 import { AbstractHttpAdapter } from '@nestjs/core'
 import { type Context, Hono, type MiddlewareHandler } from 'hono'
 import { cors } from 'hono/cors'
@@ -38,17 +35,17 @@ import {
 	createBodyLimit,
 	enforceRequestBodyLimit,
 	parseRequestBody,
-} from './helpers/body-parser.js'
-import { extractClientIp } from './helpers/client-ip.js'
-import { getRequestSizeLimit, isPathMatch } from './helpers/path-matching.js'
-import { getNestHonoRequest } from './helpers/request.js'
+} from './helpers/body-parser'
+import { extractClientIp } from './helpers/client-ip'
+import { getRequestSizeLimit, isPathMatch } from './helpers/path-matching'
+import { getNestHonoRequest } from './helpers/request'
 import {
 	createResponse,
 	finalizeResponse,
 	getFinalizedResponse,
 	isJsonContentType,
-} from './helpers/response.js'
-import type { HonoAdapterOptions } from './options.js'
+} from './helpers/response'
+import type { HonoAdapterOptions } from './options'
 
 type RouteHandler = (
 	req: Context['req'],
@@ -80,7 +77,11 @@ type HonoRouteMethod =
 	| 'unlock'
 	| 'use'
 
-type NestCorsOptions = CorsOptions | CorsOptionsDelegate<Context['req']>
+type NestCorsOptions = Exclude<
+	NestApplicationOptions['cors'],
+	boolean | undefined
+>
+type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
 
 interface StaticAssetsOptions extends ServeStaticOptions {
 	prefix?: string
