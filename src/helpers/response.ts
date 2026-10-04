@@ -18,6 +18,18 @@ interface NodeRequestEnvironment {
 }
 
 const finalizedResponses = new WeakMap<Context, FinalizedResponse>()
+const finalizeListeners = new WeakMap<Context, Set<() => void>>()
+
+/**
+ * Registers a listener called when a response is finalized on the Hono
+ * context and returns a function that removes it.
+ */
+export function onResponseFinalized(ctx: Context, listener: () => void) {
+	const listeners = finalizeListeners.get(ctx) ?? new Set()
+	listeners.add(listener)
+	finalizeListeners.set(ctx, listeners)
+	return () => listeners.delete(listener)
+}
 
 /**
  * Stores the Fetch response on the Hono context and returns it for Hono's
@@ -35,6 +47,7 @@ export function finalizeResponse(ctx: Context, response: Response) {
 	ctx.res = response
 	const contextResponse = ctx.res
 	finalizedResponses.set(ctx, { response: contextResponse, source: response })
+	for (const listener of finalizeListeners.get(ctx) ?? []) listener()
 	return contextResponse
 }
 

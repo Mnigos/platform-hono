@@ -49,6 +49,7 @@ interface CapturedRequest {
 	guardBody?: unknown
 	headers?: Record<string, string>
 	middlewareRan?: boolean
+	on?: (event: 'close', listener: () => void) => void
 	raw?: Request
 	rawBody?: Buffer
 }
@@ -98,6 +99,12 @@ function createInfiniteSseEvents() {
 
 export function getActiveSseSubscriptions() {
 	return activeSseSubscriptions
+}
+
+let requestCloseCalls = 0
+
+export function getRequestCloseCalls() {
+	return requestCloseCalls
 }
 
 @Injectable()
@@ -234,6 +241,14 @@ class TestController {
 	@Get('/middleware/excluded')
 	middlewareExcluded(@Req() req: CapturedRequest) {
 		return { middlewareRan: req.middlewareRan ?? false }
+	}
+
+	@Get('/request-close')
+	requestClose(@Req() req: CapturedRequest) {
+		req.on?.('close', () => {
+			requestCloseCalls += 1
+		})
+		return { ok: true }
 	}
 
 	@Get('/ip')
