@@ -47,6 +47,11 @@ interface CapturedRequest {
 	rawBody?: Buffer
 }
 
+interface TestNestApplication extends INestApplication {
+	useBodyParser(type: string, options?: unknown): this
+	useStaticAssets(path: string, options?: unknown): this
+}
+
 function delay(ms: number) {
 	return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -161,6 +166,11 @@ class TestController {
 	@Post('/auth-sibling')
 	authSibling(@Body() body: unknown) {
 		return { body }
+	}
+
+	@Post('/raw-upload')
+	async rawUpload(@Req() req: CapturedRequest) {
+		return { size: req.raw ? (await req.raw.arrayBuffer()).byteLength : 0 }
 	}
 
 	@Get('/ip')
@@ -294,12 +304,16 @@ class TestModule {}
 export async function startApp(
 	adapter = new HonoAdapter(),
 	options: NestApplicationOptions = {},
-	setup?: (app: INestApplication) => void | Promise<void>
+	setup?: (app: TestNestApplication) => void | Promise<void>
 ) {
-	const app = await NestFactory.create(TestModule, adapter, {
-		logger: false,
-		...options,
-	})
+	const app = await NestFactory.create<TestNestApplication>(
+		TestModule,
+		adapter,
+		{
+			logger: false,
+			...options,
+		}
+	)
 
 	await setup?.(app)
 	await app.listen(0)
