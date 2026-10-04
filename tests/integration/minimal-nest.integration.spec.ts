@@ -173,6 +173,33 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
+	test('keeps default parsers when a custom parser is registered before Nest boots', async () => {
+		const adapter = new HonoAdapter()
+		adapter.useBodyParser('text', false)
+		const app = await startApp(adapter)
+
+		try {
+			const jsonResponse = await fetch(`${app.baseUrl}/echo`, {
+				body: JSON.stringify({ ok: true }),
+				headers: { 'content-type': 'application/json' },
+				method: 'POST',
+			})
+			expect(jsonResponse.status).toBe(201)
+			await expect(jsonResponse.json()).resolves.toEqual({ body: { ok: true } })
+
+			const formResponse = await fetch(`${app.baseUrl}/echo`, {
+				body: new URLSearchParams({ name: 'rigtch' }),
+				method: 'POST',
+			})
+			expect(formResponse.status).toBe(201)
+			await expect(formResponse.json()).resolves.toEqual({
+				body: { name: 'rigtch' },
+			})
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('keeps request.body available for guards while preserving the raw request body', async () => {
 		const app = await startApp(new HonoAdapter())
 
