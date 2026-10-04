@@ -82,6 +82,7 @@ type NestCorsOptions = Exclude<
 	NestApplicationOptions['cors'],
 	boolean | undefined
 >
+type StaticOrigin = Exclude<CorsOptions['origin'], CustomOrigin>
 type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
 
 interface StaticAssetsOptions extends ServeStaticOptions {
@@ -306,36 +307,30 @@ function isAllowedOrigin(
 	return allowedOrigin === requestOrigin
 }
 
-function normalizeCorsOrigin(origin: CorsOptions['origin']) {
-	if (origin === undefined) return '*'
-	if (origin === false) return () => undefined
-	if (typeof origin !== 'function') {
-		if (origin === '*') return '*'
-		return (requestOrigin: string) =>
-			isAllowedOrigin(requestOrigin, origin) ? requestOrigin : undefined
-	}
+function normalizeCorsOrigin(origin: StaticOrigin | undefined) {
+	if (origin === undefined || origin === '*') return '*'
+	return (requestOrigin: string) =>
+		isAllowedOrigin(requestOrigin, origin) ? requestOrigin : undefined
+}
 
+function resolveCorsOrigin(
+	origin: CorsOptions['origin'],
+	requestOrigin: string | undefined
+) {
+	if (typeof origin !== 'function') return origin
 	const originCallback = origin as (
 		requestOrigin: string | undefined,
 		callback: Parameters<CustomOrigin>[1]
 	) => void
-	return (requestOrigin: string) =>
-		new Promise<string | undefined>((resolve, reject) => {
-			originCallback(requestOrigin || undefined, (error, allowedOrigin) => {
-				if (error) {
-					reject(error)
-					return
-				}
-				if (!(allowedOrigin && isAllowedOrigin(requestOrigin, allowedOrigin))) {
-					resolve(undefined)
-					return
-				}
-				resolve(allowedOrigin === '*' ? '*' : requestOrigin)
-			})
+	return new Promise<StaticOrigin | undefined>((resolve, reject) => {
+		originCallback(requestOrigin || undefined, (error, allowedOrigin) => {
+			if (error) reject(error)
+			else resolve(allowedOrigin ?? false)
 		})
+	})
 }
 
-function normalizeCorsOptions(options: CorsOptions) {
+function normalizeCorsOptions(options: CorsOptions, origin?: StaticOrigin) {
 	const allowHeaders = normalizeCorsList(options.allowedHeaders)
 	const allowMethods = normalizeCorsList(options.methods)
 	const exposeHeaders = normalizeCorsList(options.exposedHeaders)
@@ -347,7 +342,7 @@ function normalizeCorsOptions(options: CorsOptions) {
 			: { credentials: options.credentials }),
 		...(exposeHeaders ? { exposeHeaders } : {}),
 		...(options.maxAge === undefined ? {} : { maxAge: options.maxAge }),
-		origin: normalizeCorsOrigin(options.origin),
+		origin: normalizeCorsOrigin(origin),
 	}
 }
 
@@ -460,6 +455,26 @@ function createRequestSocketBridge(socket: NodeSocketLike) {
 	}
 }
 
+function runHandlers(
+	ctx: Context,
+	handlers: MiddlewareHandler[],
+	next: () => Promise<void>
+) {
+	const dispatch = async (index: number): Promise<Response | undefined> => {
+		const handler = handlers[index]
+		if (!handler) {
+			await next()
+			return
+		}
+		return (
+			(await handler(ctx, async () => {
+				await dispatch(index + 1)
+			})) ?? undefined
+		)
+	}
+	return dispatch(0)
+}
+
 function parseBodyLimit(limit: number | string | undefined) {
 	if (typeof limit === 'number') return limit
 	if (limit === undefined) return
@@ -486,7 +501,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	private readonly adapterOptions: HonoAdapterOptions
 	private readonly logger = new Logger('HonoAdapter')
 	private forceCloseConnections = false
-	private readonly headRoutePaths = new Set<string>()
+	private readonly headRouteHandlers = new Map<string, MiddlewareHandler[]>()
+	private readonly triedHeadRoutes = new WeakMap<Context, Set<string>>()
 
 	constructor(options: HonoAdapterOptions = {}) {
 		super(new Hono())
@@ -740,22 +756,38 @@ export class HonoAdapter extends AbstractHttpAdapter<
 				continue
 			}
 			if (method === 'head') {
-				this.headRoutePaths.add(honoPath)
+				const headHandlers = this.headRouteHandlers.get(honoPath) ?? []
+				headHandlers.push(wrappedHandler)
+				this.headRouteHandlers.set(honoPath, headHandlers)
 				this.hono.on('GET', honoPath, (ctx, next) =>
-					ctx.req.method === 'HEAD' ? wrappedHandler(ctx, next) : next()
+					ctx.req.method === 'HEAD' && this.markHeadRouteTried(ctx, honoPath)
+						? runHandlers(ctx, headHandlers, next)
+						: next()
 				)
 				continue
 			}
 
 			const handlerForMethod: MiddlewareHandler =
 				method === 'get'
-					? (ctx, next) =>
-							ctx.req.method === 'HEAD' && this.headRoutePaths.has(honoPath)
-								? next()
+					? (ctx, next) => {
+							const headHandlers = this.headRouteHandlers.get(honoPath)
+							return ctx.req.method === 'HEAD' &&
+								headHandlers &&
+								this.markHeadRouteTried(ctx, honoPath)
+								? runHandlers(ctx, [...headHandlers, wrappedHandler], next)
 								: wrappedHandler(ctx, next)
+						}
 					: wrappedHandler
 			this.hono.on(method.toUpperCase(), honoPath, handlerForMethod)
 		}
+	}
+
+	private markHeadRouteTried(ctx: Context, path: string) {
+		const triedPaths = this.triedHeadRoutes.get(ctx) ?? new Set<string>()
+		if (triedPaths.has(path)) return false
+		triedPaths.add(path)
+		this.triedHeadRoutes.set(ctx, triedPaths)
+		return true
 	}
 
 	override all(...args: RouteArguments) {
@@ -965,7 +997,15 @@ export class HonoAdapter extends AbstractHttpAdapter<
 				typeof options === 'function'
 					? await resolveCorsOptions(options, ctx.req)
 					: options
-			const corsMiddleware = cors(normalizeCorsOptions(resolvedOptions))
+			const origin = await resolveCorsOrigin(
+				resolvedOptions.origin,
+				ctx.req.header('origin')
+			)
+			if (origin === false) {
+				await next()
+				return
+			}
+			const corsMiddleware = cors(normalizeCorsOptions(resolvedOptions, origin))
 
 			if (ctx.req.method === 'OPTIONS' && resolvedOptions.preflightContinue) {
 				await corsMiddleware(ctx, async () => undefined)
@@ -1119,7 +1159,10 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			if (!(method || isAllMethods))
 				throw new Error(`Unsupported request method: ${requestMethod}`)
 
+			const invokedContexts = new WeakSet<Context>()
 			const middleware: MiddlewareHandler = async (ctx, next) => {
+				if (invokedContexts.has(ctx)) return next()
+				invokedContexts.add(ctx)
 				this.normalizeRequestMetadata(ctx, optionalParameterSuffixes)
 				const response = await this.invokeHandler(callback, ctx, next, true)
 				if (response instanceof Response) return response

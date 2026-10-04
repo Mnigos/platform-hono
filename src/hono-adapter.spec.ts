@@ -135,6 +135,61 @@ describe('HonoAdapter', () => {
 		expect(headResponse.headers.get('x-handler')).toBe('head')
 	})
 
+	test.each([
+		['GET route first', true],
+		['HEAD route first', false],
+	])('falls back to GET when explicit HEAD routes reject the request (%s)', async (_case, getFirst) => {
+		const adapter = new HonoAdapter()
+		const registerHostRoute = (
+			method: 'get' | 'head',
+			host: string,
+			handlerName: string
+		) => {
+			adapter[method]('/hosted', async (req, ctx, next) => {
+				if (req.header('host') !== host) {
+					await next()
+					return
+				}
+				adapter.setHeader(ctx, 'x-handler', handlerName)
+				await adapter.reply(ctx, handlerName)
+			})
+		}
+		const registerHostA = () => {
+			registerHostRoute('get', 'a.test', 'a-get')
+			registerHostRoute('head', 'a.test', 'a-head')
+		}
+		const registerHostB = () => {
+			registerHostRoute('get', 'b.test', 'b-get')
+		}
+		if (getFirst) {
+			registerHostB()
+			registerHostA()
+		} else {
+			registerHostA()
+			registerHostB()
+		}
+
+		const hostBHeadResponse = await adapter.hono.request('/hosted', {
+			headers: { host: 'b.test' },
+			method: 'HEAD',
+		})
+		expect(hostBHeadResponse.status).toBe(200)
+		expect(hostBHeadResponse.headers.get('x-handler')).toBe('b-get')
+
+		const hostAHeadResponse = await adapter.hono.request('/hosted', {
+			headers: { host: 'a.test' },
+			method: 'HEAD',
+		})
+		expect(hostAHeadResponse.status).toBe(200)
+		expect(hostAHeadResponse.headers.get('x-handler')).toBe('a-head')
+
+		await expect(
+			(
+				await adapter.hono.request('/hosted', { headers: { host: 'a.test' } })
+			).text()
+		).resolves.toBe('a-get')
+	})
+
 	test('cancels GET response streams used for HEAD fallback', async () => {
 		const adapter = new HonoAdapter()
 		const stream = new PassThrough()
@@ -785,6 +840,50 @@ describe('HonoAdapter', () => {
 		)
 	})
 
+	test.each<[string, NonNullable<Parameters<HonoAdapter['enableCors']>[0]>]>([
+		['static', { origin: false }],
+		[
+			'callback',
+			{
+				origin: (_origin, callback) => {
+					callback(null, false)
+				},
+			},
+		],
+		[
+			'empty callback',
+			{
+				origin: (_origin, callback) => {
+					callback(null)
+				},
+			},
+		],
+		[
+			'delegate',
+			(_request, callback) => {
+				callback(null, { origin: false })
+			},
+		],
+	])('bypasses CORS disabled by a %s origin', async (_case, corsOptions) => {
+		const adapter = new HonoAdapter()
+		adapter.enableCors(corsOptions)
+		adapter.options('/target', async (_req, ctx) => {
+			await adapter.reply(ctx, 'controller')
+		})
+
+		const response = await adapter.hono.request('/target', {
+			headers: {
+				'access-control-request-method': 'POST',
+				origin: 'https://example.test',
+			},
+			method: 'OPTIONS',
+		})
+
+		expect(response.status).toBe(200)
+		expect(response.headers.has('access-control-allow-origin')).toBe(false)
+		await expect(response.text()).resolves.toBe('controller')
+	})
+
 	test('translates the standard Nest static root and prefix', () => {
 		const adapter = new HonoAdapter()
 
@@ -937,6 +1036,26 @@ describe('HonoAdapter', () => {
 		expect(calls).toBe(1)
 		expect((await adapter.hono.request('/nested')).status).toBe(200)
 		expect(calls).toBe(2)
+	})
+
+	test('runs overlapping optional-segment Nest middleware once per request', async () => {
+		const adapter = new HonoAdapter()
+		const allFactory = await adapter.createMiddlewareFactory(RequestMethod.ALL)
+		let calls = 0
+
+		allFactory(
+			'/api{/:id}{/:action}',
+			(_req: unknown, _ctx: unknown, next: () => void) => {
+				calls += 1
+				next()
+			}
+		)
+		adapter.get('/api/:id', async (_req, ctx) => {
+			await adapter.reply(ctx, 'api')
+		})
+
+		expect((await adapter.hono.request('/api/123')).status).toBe(200)
+		expect(calls).toBe(1)
 	})
 
 	test('returns request method, URL, adapter type, and unsupported method behavior', () => {
