@@ -53,7 +53,7 @@ describe('HonoAdapter', () => {
 		adapter.registerParserMiddleware()
 
 		expect(adapter.isParserRegistered).toBe(true)
-		expect(useBodyParserSpy).toHaveBeenCalledTimes(3)
+		expect(useBodyParserSpy).toHaveBeenCalledTimes(4)
 	})
 
 	test('registers all HTTP route helpers', async () => {
@@ -237,17 +237,6 @@ describe('HonoAdapter', () => {
 		expect(capturedRequest?.ip).toBe('192.0.2.10')
 	})
 
-	test('parses request bodies through initialized middleware', async () => {
-		const adapter = createInitializedAdapter()
-
-		const req = await requestWithCapturedBody(adapter, '/json', {
-			body: JSON.stringify({ ok: true }),
-			headers: { 'content-type': 'application/json' },
-		})
-
-		expect(req.body).toEqual({ ok: true })
-	})
-
 	test('preserves raw request bodies for downstream consumers after parsing', async () => {
 		const adapter = createInitializedAdapter()
 		const bodyText = JSON.stringify({ ok: true })
@@ -327,10 +316,14 @@ describe('HonoAdapter', () => {
 		).rejects.toMatchObject({ message: 'Upload too large' })
 	})
 
-	test('uses explicit body parser limits registered through Nest parser hooks', async () => {
+	test.each<[string, number | { limit: string }, string, boolean]>([
+		['numeric', 3, 'hello', true],
+		['string unit', { limit: '3b' }, 'hello', false],
+		['zero-byte', { limit: '0b' }, 'x', false],
+	])('enforces %s Nest body parser limits', async (_case, limit, body, scoped) => {
 		const adapter = new HonoAdapter()
 
-		adapter.useBodyParser('text/plain', false, 3)
+		adapter.useBodyParser('text/plain', false, limit)
 		adapter.hono.onError(err => {
 			throw err
 		})
@@ -340,14 +333,23 @@ describe('HonoAdapter', () => {
 
 		await expect(
 			adapter.hono.request('/limited', {
-				body: 'hello',
-				headers: {
-					'content-length': '5',
-					'content-type': 'text/plain',
-				},
+				body,
+				headers: { 'content-type': 'text/plain' },
 				method: 'POST',
 			})
 		).rejects.toBeInstanceOf(Error)
+
+		if (scoped) {
+			expect(
+				(
+					await adapter.hono.request('/limited', {
+						body: '{"long":true}',
+						headers: { 'content-type': 'application/json' },
+						method: 'POST',
+					})
+				).status
+			).toBe(200)
+		}
 	})
 
 	test('replies with JSON, text, buffers, empty bodies, and prebuilt responses', async () => {

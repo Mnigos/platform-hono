@@ -1,10 +1,23 @@
 import { mkdir, writeFile } from 'node:fs/promises'
+import { request } from 'node:http'
 import { join } from 'node:path'
 import { HonoAdapter } from '../../src'
 import { startApp } from './fixtures/minimal-nest-app'
 
 function delay(ms: number) {
 	return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+function getWithChunkedBody(url: string, body: string) {
+	return new Promise<{ error?: Error; statusCode?: number }>(resolve => {
+		const clientRequest = request(url, { method: 'GET' }, response => {
+			response.resume()
+			response.on('end', () => resolve({ statusCode: response.statusCode }))
+		})
+		clientRequest.on('error', error => resolve({ error }))
+		clientRequest.write(body)
+		clientRequest.end()
+	})
 }
 
 describe('minimal Nest integration', () => {
@@ -62,6 +75,31 @@ describe('minimal Nest integration', () => {
 			})
 		} finally {
 			await rawBodyApp.close()
+		}
+	})
+
+	test('supports Nest useBodyParser after disabling default parsers', async () => {
+		const app = await startApp(
+			new HonoAdapter(),
+			{ bodyParser: false },
+			nestApp => {
+				nestApp.useBodyParser('json', { limit: '10kb' })
+			}
+		)
+
+		try {
+			const response = await fetch(`${app.baseUrl}/echo`, {
+				body: JSON.stringify({ custom: true }),
+				headers: { 'content-type': 'application/json' },
+				method: 'POST',
+			})
+
+			expect(response.status).toBe(201)
+			await expect(response.json()).resolves.toEqual({
+				body: { custom: true },
+			})
+		} finally {
+			await app.close()
 		}
 	})
 
@@ -220,6 +258,41 @@ describe('minimal Nest integration', () => {
 			await expect(siblingResponse.json()).resolves.toEqual({
 				body: { parsed: true },
 			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('enforces route limits when parsing is skipped', async () => {
+		const app = await startApp(
+			new HonoAdapter({
+				requestSizeLimits: [{ maxBytes: 3, path: '/raw-upload' }],
+				skipBodyParserFor: ['/raw-upload'],
+			})
+		)
+
+		try {
+			const response = await fetch(`${app.baseUrl}/raw-upload`, {
+				body: 'hello',
+				headers: { 'content-type': 'application/octet-stream' },
+				method: 'POST',
+			})
+			expect(response.status).toBe(413)
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('rejects chunked GET bodies that exceed the global limit', async () => {
+		const app = await startApp(new HonoAdapter({ bodyLimit: 3 }))
+
+		try {
+			const result = await getWithChunkedBody(
+				`${app.baseUrl}/hello/42`,
+				'hello'
+			)
+			expect(result.statusCode).not.toBe(200)
+			expect(result.error ?? result.statusCode).toBeDefined()
 		} finally {
 			await app.close()
 		}

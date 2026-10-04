@@ -24,7 +24,8 @@ import { type Context, Hono, type MiddlewareHandler } from 'hono'
 import { cors } from 'hono/cors'
 import {
 	createBodyLimit,
-	parseRequestBodyWithLimits,
+	enforceRequestBodyLimit,
+	parseRequestBody,
 } from './helpers/body-parser'
 import { extractClientIp } from './helpers/client-ip'
 import { getRequestSizeLimit, isPathMatch } from './helpers/path-matching'
@@ -58,6 +59,17 @@ interface HonoSseWritable extends PassThrough {
 		reasonPhraseOrHeaders?: OutgoingHttpHeaders | string,
 		headers?: OutgoingHttpHeaders
 	) => HonoSseWritable
+}
+
+const BODY_LIMIT_REGEX = /^\s*(\d+(?:\.\d+)?)\s*(b|kb|mb|gb)?\s*$/i
+
+function parseBodyLimit(limit: number | string | undefined) {
+	if (typeof limit === 'number') return limit
+	const match = limit?.match(BODY_LIMIT_REGEX)
+	if (!match) return
+	const multipliers = { b: 1, gb: 1024 ** 3, kb: 1024, mb: 1024 ** 2 }
+	const unit = (match[2]?.toLowerCase() ?? 'b') as keyof typeof multipliers
+	return Math.floor(Number(match[1]) * multipliers[unit])
 }
 
 function normalizeHonoPath(path: string) {
@@ -370,11 +382,33 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		this.hono.use(cors(options))
 	}
 
-	useBodyParser(type: string, _rawBody: boolean, limit?: number) {
-		this.logger.log(
-			`Registering body parser middleware for type: ${type}${limit ? ` | bodyLimit: ${limit}` : ''}`
+	useBodyParser(
+		type: string,
+		rawBody: boolean,
+		options?: number | { limit?: number | string }
+	) {
+		const configuredLimit = parseBodyLimit(
+			typeof options === 'number' ? options : options?.limit
 		)
-		if (limit) this.hono.use(createBodyLimit(limit))
+		this.logger.log(
+			`Registering body parser middleware for type: ${type}${configuredLimit === undefined ? '' : ` | bodyLimit: ${configuredLimit}`}`
+		)
+		const parse = async (ctx: Context, next: () => Promise<void>) => {
+			const pathname = new URL(ctx.req.url).pathname
+			const shouldSkip = (this.adapterOptions.skipBodyParserFor ?? []).some(
+				path => isPathMatch(pathname, path)
+			)
+			if (!shouldSkip) await parseRequestBody(ctx, rawBody, type)
+			this.normalizeRequestMetadata(ctx)
+			await next()
+		}
+		const bodyLimit =
+			configuredLimit === undefined
+				? undefined
+				: createBodyLimit(configuredLimit, type)
+		this.hono.use(
+			bodyLimit ? (ctx, next) => bodyLimit(ctx, () => parse(ctx, next)) : parse
+		)
 		this._isParserRegistered = true
 	}
 
@@ -399,28 +433,20 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	initHttpServer(options: NestApplicationOptions) {
-		const skipPaths = this.adapterOptions.skipBodyParserFor ?? []
-
 		this.hono.use(async (ctx, next) => {
-			const pathname = new URL(ctx.req.url).pathname
-			const shouldSkip = skipPaths.some(path => isPathMatch(pathname, path))
+			const pathname = this.normalizeRequestMetadata(ctx)
 			const requestSizeLimit = getRequestSizeLimit(
 				pathname,
 				this.adapterOptions.requestSizeLimits
 			)
 
-			if (options.bodyParser !== false && !shouldSkip) {
-				await parseRequestBodyWithLimits(
-					ctx,
-					this.adapterOptions,
-					options.rawBody ?? false,
-					requestSizeLimit
-				)
-			}
+			await enforceRequestBodyLimit(ctx, this.adapterOptions, requestSizeLimit)
 
 			this.normalizeRequestMetadata(ctx)
 			await next()
 		})
+		if (options.bodyParser !== false)
+			this.registerParserMiddleware(undefined, options.rawBody)
 
 		const isHttpsEnabled = !!options?.httpsOptions
 		const createServer = isHttpsEnabled ? createHttpsServer : createHttpServer
@@ -439,9 +465,10 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	registerParserMiddleware(_prefix?: string, rawBody?: boolean) {
 		if (this._isParserRegistered) return
 		this.logger.log('Registering parser middleware')
-		this.useBodyParser('application/x-www-form-urlencoded', rawBody ?? false)
-		this.useBodyParser('application/json', rawBody ?? false)
-		this.useBodyParser('text/plain', rawBody ?? false)
+		this.useBodyParser('urlencoded', rawBody ?? false)
+		this.useBodyParser('json', rawBody ?? false)
+		this.useBodyParser('text', rawBody ?? false)
+		this.useBodyParser('multipart/form-data', rawBody ?? false)
 		this._isParserRegistered = true
 	}
 

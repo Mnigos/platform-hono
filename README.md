@@ -84,8 +84,8 @@ const app = await NestFactory.create(AppModule, new HonoAdapter(), {
 
 ## Request Size Limits
 
-The adapter applies a default body limit of 1 MiB before parsing JSON, text,
-form, or multipart bodies.
+The adapter applies a default body limit of 1 MiB to every request body,
+including routes where parsing is skipped or disabled.
 
 Configure `bodyLimit` to change the global default, or set `bodyLimit: false`
 to disable the global default:
