@@ -17,6 +17,7 @@ function getWithHost(url: string, host: string) {
 			const clientRequest = request(url, { headers: { host } }, response => {
 				const chunks: Buffer[] = []
 				response.on('data', chunk => chunks.push(Buffer.from(chunk)))
+				response.on('error', reject)
 				response.on('end', () => {
 					resolve({
 						body: Buffer.concat(chunks).toString('utf8'),
@@ -33,6 +34,12 @@ function getWithHost(url: string, host: string) {
 function abortAfterFirstChunk(url: string) {
 	return new Promise<void>((resolve, reject) => {
 		const clientRequest = request(url, response => {
+			response.on('error', reject)
+			response.once('end', () =>
+				reject(
+					new Error(`Response ended without data (${response.statusCode})`)
+				)
+			)
 			response.once('data', () => {
 				response.destroy()
 				clientRequest.destroy()
@@ -44,14 +51,19 @@ function abortAfterFirstChunk(url: string) {
 	})
 }
 
-function getWithChunkedBody(url: string, body: string) {
-	return new Promise<{ error?: Error; statusCode?: number }>(resolve => {
-		const clientRequest = request(url, { method: 'GET' }, response => {
-			response.resume()
-			response.on('end', () => resolve({ statusCode: response.statusCode }))
-		})
-		clientRequest.on('error', error => resolve({ error }))
-		clientRequest.write(body)
+function getWithChunkedBody(url: string, chunks: string[]) {
+	return new Promise<number | undefined>((resolve, reject) => {
+		const clientRequest = request(
+			url,
+			{ headers: { 'transfer-encoding': 'chunked' }, method: 'GET' },
+			response => {
+				response.resume()
+				response.on('error', reject)
+				response.on('end', () => resolve(response.statusCode))
+			}
+		)
+		clientRequest.on('error', reject)
+		for (const chunk of chunks) clientRequest.write(chunk)
 		clientRequest.end()
 	})
 }
@@ -375,12 +387,12 @@ describe('minimal Nest integration', () => {
 		const app = await startApp(new HonoAdapter({ bodyLimit: 3 }))
 
 		try {
-			const result = await getWithChunkedBody(
-				`${app.baseUrl}/hello/42`,
-				'hello'
-			)
-			expect(result.statusCode).not.toBe(200)
-			expect(result.error ?? result.statusCode).toBeDefined()
+			await expect(
+				getWithChunkedBody(`${app.baseUrl}/hello/42`, ['h', 'i'])
+			).resolves.toBe(200)
+			await expect(
+				getWithChunkedBody(`${app.baseUrl}/hello/42`, ['he', 'll', 'o'])
+			).rejects.toMatchObject({ code: 'ECONNRESET' })
 		} finally {
 			await app.close()
 		}
