@@ -1,5 +1,21 @@
 # @mnigos/platform-hono
 
+## 0.3.0
+
+### Minor Changes
+
+- 0b7d41d: Complete Nest route, middleware, CORS, static asset, parser, SSE, and HTTP method compatibility; harden body limits, trusted proxy resolution, and stream lifecycle handling; and require Node 20, Hono 4.12.25+, and `@hono/node-server` 2.0.5+.
+
+  `useBodyParser` now throws on invalid `limit` strings (supported units: b, kb, mb, gb, tb, pb) instead of silently disabling that parser's limit.
+
+  Parser types registered with `useBodyParser` before `NestFactory.create` no longer suppress the remaining default JSON, text, form, and multipart parsers.
+
+  Explicit `@Head()` handlers take precedence over the GET fallback for HEAD requests regardless of registration order (Express answers with whichever matching route was registered first); when every explicit HEAD handler passes the request on, for example on a host mismatch, the GET handler still answers it.
+
+### Patch Changes
+
+- cded3dd: Security: a `'*'` entry inside a CORS `origin` array is now matched literally, like Express `cors`, instead of allowing every origin. Configs such as `origin: ['https://app.example', '*']` with `credentials: true` previously reflected any request origin; they now only allow the listed origins. Use `origin: '*'` or `origin: true` to allow every origin.
+
 ## 0.2.0
 
 ### Minor Changes
