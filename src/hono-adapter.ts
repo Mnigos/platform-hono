@@ -295,7 +295,7 @@ function isAllowedOrigin(
 	requestOrigin: string,
 	allowedOrigin: boolean | string | RegExp | (string | RegExp)[]
 ): boolean {
-	if (allowedOrigin === true || allowedOrigin === '*') return true
+	if (allowedOrigin === true) return true
 	if (!allowedOrigin) return false
 	if (Array.isArray(allowedOrigin)) {
 		return allowedOrigin.some(origin => isAllowedOrigin(requestOrigin, origin))

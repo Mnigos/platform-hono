@@ -4,7 +4,10 @@ import type { Server as HttpsServer } from 'node:https'
 import { PassThrough } from 'node:stream'
 import { serveStatic } from '@hono/node-server/serve-static'
 import { Logger, RequestMethod } from '@nestjs/common'
-import type { CustomOrigin } from '@nestjs/common/interfaces/external/cors-options.interface'
+import type {
+	CorsOptions,
+	CustomOrigin,
+} from '@nestjs/common/interfaces/external/cors-options.interface'
 import type { Context } from 'hono'
 import { getNestHonoRequest, type NestHonoRequest } from './helpers/request'
 import { HonoAdapter } from './hono-adapter'
@@ -12,6 +15,8 @@ import { HonoAdapter } from './hono-adapter'
 vi.mock('@hono/node-server/serve-static', () => ({
 	serveStatic: vi.fn(() => async () => new Response('static')),
 }))
+
+type StaticCorsOrigin = Exclude<CorsOptions['origin'], CustomOrigin | undefined>
 
 const TRUSTED_ORIGIN_REGEX = /^https:\/\/trusted\.test$/
 
@@ -942,6 +947,54 @@ describe('HonoAdapter', () => {
 		expect(response.status).toBe(204)
 		expect(response.headers.get('access-control-allow-origin')).toBe(
 			allowedOrigin
+		)
+	})
+
+	test.each<[string, StaticCorsOrigin, string, string | null]>([
+		[
+			'array with a literal wildcard',
+			['https://app.test', '*'],
+			'https://attacker.test',
+			null,
+		],
+		[
+			'array with a literal wildcard and a wildcard origin',
+			['https://app.test', '*'],
+			'*',
+			'*',
+		],
+		[
+			'array with a matching string',
+			['https://app.test', '*'],
+			'https://app.test',
+			'https://app.test',
+		],
+		[
+			'array with a matching RegExp',
+			['https://app.test', TRUSTED_ORIGIN_REGEX],
+			'https://trusted.test',
+			'https://trusted.test',
+		],
+		['wildcard string', '*', 'https://attacker.test', '*'],
+		['true', true, 'https://attacker.test', 'https://attacker.test'],
+	])('applies credentialed static CORS origin %s', async (_case, origin, requestOrigin, allowedOrigin) => {
+		const adapter = new HonoAdapter()
+		adapter.enableCors({ credentials: true, origin })
+
+		const response = await adapter.hono.request('/target', {
+			headers: {
+				'access-control-request-method': 'POST',
+				origin: requestOrigin,
+			},
+			method: 'OPTIONS',
+		})
+
+		expect(response.status).toBe(204)
+		expect(response.headers.get('access-control-allow-origin')).toBe(
+			allowedOrigin
+		)
+		expect(response.headers.get('access-control-allow-credentials')).toBe(
+			'true'
 		)
 	})
 

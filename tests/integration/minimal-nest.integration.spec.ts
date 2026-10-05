@@ -753,6 +753,39 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
+	test('matches a literal wildcard in a credentialed CORS origin list exactly over HTTP', async () => {
+		const app = await startApp(new HonoAdapter(), {}, nestApp => {
+			nestApp.enableCors({
+				credentials: true,
+				origin: ['https://app.example.test', '*'],
+			})
+		})
+
+		try {
+			const preflight = (origin: string) =>
+				fetch(`${app.baseUrl}/echo`, {
+					headers: { 'access-control-request-method': 'POST', origin },
+					method: 'OPTIONS',
+				})
+			const [attackerResponse, appResponse] = await Promise.all([
+				preflight('https://attacker.test'),
+				preflight('https://app.example.test'),
+			])
+
+			expect(attackerResponse.headers.has('access-control-allow-origin')).toBe(
+				false
+			)
+			expect(appResponse.headers.get('access-control-allow-origin')).toBe(
+				'https://app.example.test'
+			)
+			expect(appResponse.headers.get('access-control-allow-credentials')).toBe(
+				'true'
+			)
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('applies proxy trust settings over HTTP', async () => {
 		const untrustedApp = await startApp()
 
