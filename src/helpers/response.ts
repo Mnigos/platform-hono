@@ -1,6 +1,7 @@
 import { Readable } from 'node:stream'
 import { StreamableFile } from '@nestjs/common'
 import type { Context } from 'hono'
+import { withLightweightResponse } from '../server/node-response'
 
 interface FinalizedResponse {
 	response: Response
@@ -33,9 +34,15 @@ export function onResponseFinalized(ctx: Context, listener: () => void) {
 
 /**
  * Stores the Fetch response on the Hono context and returns it for Hono's
- * middleware pipeline.
+ * middleware pipeline. Pass `includesContextHeaders` for responses built with
+ * `ctx.body()`/`ctx.newResponse()`, which already carry the context headers,
+ * so Hono does not copy the response to merge the same headers again.
  */
-export function finalizeResponse(ctx: Context, response: Response) {
+export function finalizeResponse(
+	ctx: Context,
+	response: Response,
+	includesContextHeaders = false
+) {
 	const finalized = finalizedResponses.get(ctx)
 	if (
 		ctx.finalized &&
@@ -44,6 +51,7 @@ export function finalizeResponse(ctx: Context, response: Response) {
 		return finalized.response
 	}
 
+	if (includesContextHeaders) ctx.res = undefined
 	ctx.res = response
 	const contextResponse = ctx.res
 	finalizedResponses.set(ctx, { response: contextResponse, source: response })
@@ -190,6 +198,8 @@ function createStreamableFileResponse(ctx: Context, file: StreamableFile) {
 }
 
 export function isJsonContentType(contentType: string | null) {
+	if (contentType === null) return false
+	if (contentType === 'application/json') return true
 	const mediaType = contentType?.split(';', 1)[0]?.trim().toLowerCase()
 	return mediaType === 'application/json' || mediaType?.endsWith('+json')
 }
@@ -203,50 +213,92 @@ function createFetchResponse(ctx: Context, response: Response) {
 	})
 }
 
+interface BuiltResponse {
+	includesContextHeaders: boolean
+	response: Response
+}
+
+function fromContext(response: Response): BuiltResponse {
+	return { includesContextHeaders: true, response }
+}
+
+function fromElsewhere(response: Response): BuiltResponse {
+	return { includesContextHeaders: false, response }
+}
+
+function buildResponse(ctx: Context, body?: unknown): BuiltResponse {
+	if (body instanceof Response)
+		return fromElsewhere(createFetchResponse(ctx, body))
+
+	if (body instanceof StreamableFile)
+		return fromContext(createStreamableFileResponse(ctx, body))
+
+	if (body instanceof Readable)
+		return fromContext(createNodeStreamResponse(ctx, body))
+
+	if (body instanceof ReadableStream)
+		return fromContext(createStreamResponse(ctx, body))
+
+	if (body === undefined && finalizedResponses.has(ctx)) {
+		return fromElsewhere(
+			(finalizedResponses.get(ctx) as FinalizedResponse).response
+		)
+	}
+
+	if (body === undefined && ctx.res && ctx.res.body !== null) {
+		return fromElsewhere(ctx.res)
+	}
+
+	if (body !== null && typeof body === 'object' && !(body instanceof Buffer))
+		return fromContext(createJsonResponse(ctx, body))
+	if (body instanceof Buffer)
+		return fromContext(createBufferResponse(ctx, body))
+
+	return fromContext(
+		withNodeResponse(ctx, () =>
+			body === undefined
+				? ctx.newResponse(null)
+				: ctx.body(body as unknown as string)
+		)
+	)
+}
+
+function createBufferResponse(ctx: Context, body: Buffer) {
+	const responseContentType = ctx.res.headers.get('Content-Type')
+	if (!responseContentType || responseContentType.startsWith('text/plain'))
+		ctx.res.headers.set('Content-Type', 'application/octet-stream')
+	return withNodeResponse(ctx, () => ctx.body(body as unknown as string))
+}
+
+/**
+ * Serializes object bodies as JSON without reading the context headers first:
+ * the response is built, and its `Content-Type` is checked afterwards. A
+ * missing or `text/plain` type becomes `application/json`; JSON types are
+ * kept; any other explicit type keeps its plain body conversion.
+ */
+function createJsonResponse(ctx: Context, body: object | null) {
+	const response = withNodeResponse(ctx, () =>
+		ctx.newResponse(JSON.stringify(body))
+	)
+	const contentType = response.headers.get('Content-Type')
+	if (contentType === null || contentType.startsWith('text/plain')) {
+		response.headers.set('Content-Type', 'application/json')
+		return response
+	}
+	if (isJsonContentType(contentType)) return response
+	return withNodeResponse(ctx, () => ctx.body(body as unknown as string))
+}
+
+function withNodeResponse(ctx: Context, build: () => Response) {
+	return getClientSocket(ctx) ? withLightweightResponse(build) : build()
+}
+
 /**
  * Converts Nest reply bodies into Hono responses while preserving already-built
  * responses and inferring JSON/binary content types when Nest has not set one.
  */
 export function createResponse(ctx: Context, body?: unknown) {
-	if (body instanceof Response) return createFetchResponse(ctx, body)
-
-	if (body instanceof StreamableFile) {
-		return createStreamableFileResponse(ctx, body)
-	}
-
-	if (body instanceof Readable) {
-		return createNodeStreamResponse(ctx, body)
-	}
-
-	if (body instanceof ReadableStream) {
-		return createStreamResponse(ctx, body)
-	}
-
-	if (body === undefined && finalizedResponses.has(ctx)) {
-		return (finalizedResponses.get(ctx) as FinalizedResponse).response
-	}
-
-	if (body === undefined && ctx.res && ctx.res.body !== null) {
-		return ctx.res
-	}
-
-	let responseContentType = ctx.res.headers.get('Content-Type')
-
-	if (!responseContentType || responseContentType.startsWith('text/plain')) {
-		if (body instanceof Buffer) {
-			responseContentType = 'application/octet-stream'
-		} else if (typeof body === 'object') {
-			responseContentType = 'application/json'
-		}
-		if (responseContentType)
-			ctx.res.headers.set('Content-Type', responseContentType)
-	}
-
-	if (isJsonContentType(responseContentType) && typeof body === 'object') {
-		return ctx.newResponse(JSON.stringify(body))
-	}
-	if (body === undefined) return ctx.newResponse(null)
-	return ctx.body(body as string)
+	return buildResponse(ctx, body).response
 }
 
 /**
@@ -254,5 +306,6 @@ export function createResponse(ctx: Context, body?: unknown) {
  * to return the response immediately.
  */
 export function getFinalizedResponse(ctx: Context, body?: unknown) {
-	return finalizeResponse(ctx, createResponse(ctx, body))
+	const { includesContextHeaders, response } = buildResponse(ctx, body)
+	return finalizeResponse(ctx, response, includesContextHeaders)
 }

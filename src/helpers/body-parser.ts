@@ -6,49 +6,71 @@ import {
 	type HonoAdapterOptions,
 	type RequestSizeLimit,
 } from '../options'
+import { getRequestHeader, replaceRawRequest } from '../request/request-state'
 import {
 	createMultipartLimitScanner,
 	type MultipartLimitScanner,
 } from './multipart-limits'
 import { getNestHonoRequest } from './request'
 
+const BODY_LIMIT_REGEX = /^\s*(\d*\.?\d+)\s*(b|kb|mb|gb|tb|pb)?\s*$/i
+const textDecoder = new TextDecoder()
+
+/**
+ * Reads the request body once, parses it into `req.body` (and `req.rawBody`),
+ * and replaces `ctx.req.raw` with an unread copy for downstream consumers.
+ */
 export async function parseRequestBody(
 	ctx: Context,
 	rawBody: boolean,
-	parserType?: string
+	parserType?: string,
+	contentType = getRequestHeader(ctx, 'content-type')
 ) {
-	const contentType = ctx.req.header('content-type')
+	if (!shouldParseRequestBody(ctx, parserType, contentType)) return
+	await parseSupportedRequestBody(
+		ctx,
+		contentType,
+		rawBody,
+		parserType?.toLowerCase() === 'raw'
+	)
+}
+
+/**
+ * Whether a parser for `parserType` applies to the request, so callers can skip
+ * the asynchronous parse step synchronously.
+ */
+export function shouldParseRequestBody(
+	ctx: Context,
+	parserType: string | undefined,
+	contentType: string | undefined
+) {
 	const isRawParser = parserType?.toLowerCase() === 'raw'
-	if (parserType && !matchesParserType(contentType, parserType)) return
-	if (!(isParsableContentType(contentType) || isRawParser)) return
-	if (getNestHonoRequest(ctx.req).body !== undefined) return
-
-	const preservedRawRequest = cloneRawRequest(ctx.req.raw)
-
-	try {
-		await parseSupportedRequestBody(ctx, contentType, rawBody, isRawParser)
-	} finally {
-		if (preservedRawRequest) ctx.req.raw = preservedRawRequest
-	}
+	if (parserType && !matchesParserType(contentType, parserType)) return false
+	if (!(isParsableContentType(contentType) || isRawParser)) return false
+	return getNestHonoRequest(ctx.req).body === undefined
 }
 
 /**
  * Enforces body limits independently from body parsing. The adapter should call
- * this for requests whose body parser is skipped.
+ * this for requests whose body parser is skipped. Returns `undefined` when the
+ * declared `Content-Length` already proves the body is within the limit, so
+ * callers can continue without awaiting.
  */
-export async function enforceRequestBodyLimit(
+export function enforceRequestBodyLimit(
 	ctx: Context,
 	options: HonoAdapterOptions,
 	requestSizeLimit?: RequestSizeLimit
 ) {
 	const effectiveBodyLimit = getEffectiveBodyLimit(options, requestSizeLimit)
-	const multipartScanner = createMultipartLimitScanner(
-		ctx.req.header('content-type'),
-		options.multipartLimits
-	)
+	const multipartScanner = options.multipartLimits
+		? createMultipartLimitScanner(
+				getRequestHeader(ctx, 'content-type'),
+				options.multipartLimits
+			)
+		: undefined
 	if (effectiveBodyLimit === undefined && !multipartScanner) return
 
-	await enforceRawBodyLimit(
+	return enforceRawBodyLimit(
 		ctx,
 		effectiveBodyLimit ?? Number.POSITIVE_INFINITY,
 		requestSizeLimit?.errorMessage ?? 'Payload too large',
@@ -56,16 +78,14 @@ export async function enforceRequestBodyLimit(
 	)
 }
 
-function cloneRawRequest(
-	rawRequest: Context['req']['raw']
-): Context['req']['raw'] | undefined {
-	if (rawRequest.bodyUsed) return
-
-	try {
-		return rawRequest.clone() as Context['req']['raw']
-	} catch {
-		return
-	}
+function createUnreadRequest(rawRequest: Request, body: ArrayBuffer | string) {
+	const { method } = rawRequest
+	return new Request(rawRequest.url, {
+		body: method === 'GET' || method === 'HEAD' ? undefined : body,
+		headers: rawRequest.headers,
+		method,
+		signal: rawRequest.signal,
+	})
 }
 
 function isParsableContentType(contentType: string | undefined) {
@@ -79,8 +99,14 @@ function isParsableContentType(contentType: string | undefined) {
 	)
 }
 
+let lastContentType: string | undefined
+let lastMediaType: string | undefined
+
 function getMediaType(contentType: string | undefined) {
-	return contentType?.split(';', 1)[0]?.trim().toLowerCase()
+	if (contentType === lastContentType) return lastMediaType
+	lastContentType = contentType
+	lastMediaType = contentType?.split(';', 1)[0]?.trim().toLowerCase()
+	return lastMediaType
 }
 
 function isJsonMediaType(mediaType: string | undefined) {
@@ -147,10 +173,22 @@ async function parseSupportedRequestBody(
 		!isRawParser &&
 		(mediaType === 'multipart/form-data' ||
 			mediaType === 'application/x-www-form-urlencoded')
-	const bodyBuffer = await ctx.req.raw.arrayBuffer().catch(error => {
+	const rawRequest = ctx.req.raw
+	const isJsonBody = !isRawParser && isJsonMediaType(mediaType)
+	const isTextBody =
+		!(isRawParser || isFormBody) && mediaType?.startsWith('text/')
+	if (!rawBody && (isJsonBody || isTextBody)) {
+		const bodyText = await rawRequest.text()
+		replaceRawRequest(ctx, () => createUnreadRequest(rawRequest, bodyText))
+		req.body = isJsonBody ? parseJsonBody(bodyText) : bodyText
+		return
+	}
+
+	const bodyBuffer = await rawRequest.arrayBuffer().catch(error => {
 		if (isFormBody) throw new BadRequestException('Malformed request body')
 		throw error
 	})
+	replaceRawRequest(ctx, () => createUnreadRequest(rawRequest, bodyBuffer))
 	const bodyBytes = Buffer.from(bodyBuffer)
 	if (rawBody) req.rawBody = bodyBytes
 
@@ -164,15 +202,16 @@ async function parseSupportedRequestBody(
 			.catch(() => {
 				throw new BadRequestException('Malformed request body')
 			})
-	} else if (isJsonMediaType(mediaType)) {
-		const bodyText = new TextDecoder().decode(bodyBytes)
-		try {
-			req.body = bodyText ? JSON.parse(bodyText) : {}
-		} catch {
-			throw new BadRequestException('Malformed JSON body')
-		}
-	} else if (mediaType?.startsWith('text/'))
-		req.body = new TextDecoder().decode(bodyBytes)
+	} else if (isJsonBody) req.body = parseJsonBody(textDecoder.decode(bodyBytes))
+	else if (isTextBody) req.body = textDecoder.decode(bodyBytes)
+}
+
+function parseJsonBody(bodyText: string) {
+	try {
+		return bodyText ? JSON.parse(bodyText) : {}
+	} catch {
+		throw new BadRequestException('Malformed JSON body')
+	}
 }
 
 interface FormDataLike {
@@ -197,7 +236,36 @@ function convertFormData(formData: FormDataLike) {
 	return body
 }
 
-async function enforceRawBodyLimit(
+function enforceRawBodyLimit(
+	ctx: Context,
+	maxBytes: number,
+	errorMessage: string,
+	multipartScanner?: MultipartLimitScanner
+) {
+	const contentLengthHeader = getRequestHeader(ctx, 'content-length')
+	if (contentLengthHeader) {
+		const contentLength = Number.parseInt(contentLengthHeader, 10)
+		if (Number.isFinite(contentLength) && contentLength > maxBytes)
+			return rejectDeclaredLength(ctx, errorMessage)
+		if (
+			Number.isFinite(contentLength) &&
+			!multipartScanner &&
+			getRequestHeader(ctx, 'transfer-encoding') === undefined
+		)
+			return
+	}
+
+	return readBodyWithinLimit(ctx, maxBytes, errorMessage, multipartScanner)
+}
+
+async function rejectDeclaredLength(ctx: Context, errorMessage: string) {
+	const rawRequest = ctx.req.raw
+	if (rawRequest.body) await rawRequest.body.cancel().catch(() => undefined)
+	else (ctx.env as NodeRequestEnvironment | undefined)?.incoming?.destroy()
+	throw new PayloadTooLargeException(errorMessage)
+}
+
+async function readBodyWithinLimit(
 	ctx: Context,
 	maxBytes: number,
 	errorMessage: string,
@@ -205,16 +273,6 @@ async function enforceRawBodyLimit(
 ) {
 	const rawRequest = ctx.req.raw
 	const incoming = (ctx.env as NodeRequestEnvironment | undefined)?.incoming
-	const contentLengthHeader = ctx.req.header('content-length')
-	if (contentLengthHeader) {
-		const contentLength = Number.parseInt(contentLengthHeader, 10)
-		if (Number.isFinite(contentLength) && contentLength > maxBytes) {
-			if (rawRequest.body) await rawRequest.body.cancel().catch(() => undefined)
-			else incoming?.destroy()
-			throw new PayloadTooLargeException(errorMessage)
-		}
-	}
-
 	if (!rawRequest.body) {
 		if (incoming)
 			await enforceIncomingBodyLimit(incoming, maxBytes, errorMessage)
@@ -292,4 +350,24 @@ function getEffectiveBodyLimit(
 	if (requestSizeLimit) return requestSizeLimit.maxBytes
 	if (options.bodyLimit === false) return
 	return options.bodyLimit ?? DEFAULT_BODY_LIMIT
+}
+
+/**
+ * Parses Nest body parser limits such as `10kb` or `1.5mb` into bytes.
+ */
+export function parseBodyLimit(limit: number | string | undefined) {
+	if (typeof limit === 'number') return limit
+	if (limit === undefined) return
+	const match = limit.match(BODY_LIMIT_REGEX)
+	if (!match) throw new Error(`Invalid body parser limit: ${limit}`)
+	const multipliers = {
+		b: 1,
+		gb: 1024 ** 3,
+		kb: 1024,
+		mb: 1024 ** 2,
+		pb: 1024 ** 5,
+		tb: 1024 ** 4,
+	}
+	const unit = (match[2]?.toLowerCase() ?? 'b') as keyof typeof multipliers
+	return Math.floor(Number(match[1]) * multipliers[unit])
 }

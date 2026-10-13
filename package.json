@@ -29,6 +29,7 @@
     }
   },
   "scripts": {
+    "bench": "bash bench/run.sh",
     "build": "rm -rf dist && dts-bundle-generator --project tsconfig.build.json --no-banner --silent --export-referenced-types=false -o dist/index.d.ts src/index.ts && bun build src/index.ts --outfile dist/index.js --target node --format esm --packages external --sourcemap=none",
     "changeset": "changeset",
     "check": "ultracite check",

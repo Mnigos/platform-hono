@@ -495,8 +495,8 @@ describe('minimal Nest integration', () => {
 				201
 			)
 			expect(await postForm(createMultipartForm(['123456789']))).toBe(413)
-			expect(await postForm(createMultipartForm(['a', 'b', 'c']))).toBe(413)
-			expect(await postForm(createMultipartForm([], 3))).toBe(413)
+			expect(await postForm(createMultipartForm(['a', 'b', 'c']))).toBe(400)
+			expect(await postForm(createMultipartForm([], 3))).toBe(400)
 
 			const oversizedForm = new FormData()
 			oversizedForm.append('field', 'x'.repeat(4096))

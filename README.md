@@ -52,6 +52,12 @@ new HonoAdapter({ runtime: 'bun' })
 `IncomingMessage` to Fetch `Request` conversion, so it is the faster path on
 Bun.
 
+On Node.js, reply bodies are built as `@hono/node-server`'s lightweight
+`Response`, which the server writes without reading a Fetch body stream. The
+adapter swaps the global `Response` only while Hono builds that response and
+restores it right away, so application code keeps the native `Request` and
+`Response`.
+
 ### Bun server
 
 `app.getHttpServer()` returns a small wrapper around `Bun.serve` instead of a
@@ -189,9 +195,11 @@ const adapter = new HonoAdapter({
 - `parts`: maximum number of parts, files and fields combined
 
 The limits are checked while the body streams in, so a request is rejected as
-soon as it crosses a limit, before the rest of the body is read or parsed. A
-violation is rejected as a payload-too-large error, like the body limits, which
-still apply to the whole multipart body. Like `bodyLimit`, multipart limits
+soon as it crosses a limit, before the rest of the body is read or parsed.
+Status codes match Nest's multer integration: a file over `fileSize` is
+rejected as payload-too-large (413, `File too large`), and too many files,
+fields, or parts as a bad request (400, `Too many files`, `Too many fields`,
+`Too many parts`). The body limits still apply to the whole multipart body. Like `bodyLimit`, multipart limits
 also apply to routes listed in `skipBodyParserFor`.
 
 ## Proxy Trust
@@ -257,7 +265,10 @@ export class WebhookController {
 ```
 
 Adapter-provided request fields include `body`, `rawBody`, `params`, `query`,
-`headers`, `ip`, and `baseUrl`.
+`headers`, `ip`, and `baseUrl`. `req.headers`, and `req.ip` on Bun or with `trustProxy`,
+are computed on first read. After a body is parsed, `req.raw` is an unread copy
+of the request, created on first access, so consumers such as oRPC can still
+read the body.
 
 `req.query` and form bodies are objects without a prototype, so keys such as
 `__proto__`, `constructor`, or `toString` are plain values and cannot shadow

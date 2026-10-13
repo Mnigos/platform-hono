@@ -634,6 +634,44 @@ describe('HonoAdapter', () => {
 		await expect(prebuiltResponse.text()).resolves.toBe('prebuilt')
 	})
 
+	test.each([
+		[undefined, 'application/json', '{"ok":true}'],
+		['text/plain', 'application/json', '{"ok":true}'],
+		['application/vnd.api+json', 'application/vnd.api+json', '{"ok":true}'],
+		['text/html', 'text/html', '[object Object]'],
+	])('maps object replies with content type %s', async (contentType, expectedType, expectedBody) => {
+		const adapter = new HonoAdapter()
+
+		adapter.get('/object', (_req, ctx) => {
+			if (contentType) ctx.header('content-type', contentType)
+			adapter.reply(ctx, { ok: true })
+		})
+
+		const response = await adapter.hono.request('/object')
+
+		expect(response.headers.get('content-type')).toBe(expectedType)
+		await expect(response.text()).resolves.toBe(expectedBody)
+	})
+
+	test('builds lightweight node-server responses for Node requests', async () => {
+		const adapter = new HonoAdapter()
+		let reply: Response | undefined
+
+		adapter.get('/node', (_req, ctx) => {
+			adapter.reply(ctx, { ok: true })
+			reply = ctx.res
+		})
+
+		const response = await adapter.hono.request('/node', undefined, {
+			incoming: { socket: new EventEmitter() },
+		})
+
+		expect(reply).toBeInstanceOf(Response)
+		expect(reply?.constructor).not.toBe(Response)
+		expect(response.headers.get('content-type')).toBe('application/json')
+		await expect(response.json()).resolves.toEqual({ ok: true })
+	})
+
 	test('warns and forces JSON content type for error-like objects', async () => {
 		const warnSpy = vi
 			.spyOn(Logger.prototype, 'warn')
