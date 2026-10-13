@@ -1,7 +1,7 @@
 import 'reflect-metadata'
 import { execFileSync } from 'node:child_process'
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
-import { Server } from 'node:http'
+import { request, Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PassThrough } from 'node:stream'
@@ -121,6 +121,126 @@ describe.runIf(isBunRuntime)('Bun runtime integration', () => {
 				}
 			})()
 		).rejects.toThrow()
+	})
+
+	test('waits for an in-flight handler when closing gracefully', async () => {
+		const adapter = new HonoAdapter()
+		let releaseHandler: () => void = () => undefined
+		const handlerGate = new Promise<void>(resolve => {
+			releaseHandler = resolve
+		})
+		let handlerStarted = false
+		const app = await startApp(adapter, {}, () => {
+			adapter.get('/pending-handler', async (_req, ctx) => {
+				handlerStarted = true
+				await handlerGate
+				return ctx.text('completed')
+			})
+		})
+		const server = app.adapter.getHttpServer() as ListeningServer
+		const response = fetch(`${app.baseUrl}/pending-handler`)
+		let closing: Promise<void> | undefined
+		let closed = false
+
+		try {
+			await expect.poll(() => handlerStarted).toBe(true)
+			closing = app.close().then(() => {
+				closed = true
+			})
+			await expect.poll(() => server.listening).toBe(false)
+			await new Promise(resolve => setTimeout(resolve, 25))
+			expect(closed).toBe(false)
+			releaseHandler()
+			await expect((await response).text()).resolves.toBe('completed')
+			await closing
+			expect(closed).toBe(true)
+		} finally {
+			releaseHandler()
+			await response.catch(() => undefined)
+			await (closing ?? app.close())
+		}
+	})
+
+	test('interrupts an in-flight handler response when forceCloseConnections is enabled', async () => {
+		const adapter = new HonoAdapter()
+		let releaseHandler: () => void = () => undefined
+		const handlerGate = new Promise<void>(resolve => {
+			releaseHandler = resolve
+		})
+		let handlerStarted = false
+		const app = await startApp(adapter, { forceCloseConnections: true }, () => {
+			adapter.get('/pending-handler', async (_req, ctx) => {
+				handlerStarted = true
+				await handlerGate
+				return ctx.text('completed')
+			})
+		})
+		const response = fetch(`${app.baseUrl}/pending-handler`).then(
+			value => value,
+			(error: unknown) => error
+		)
+		let closing: Promise<void> | undefined
+		let closed = false
+
+		try {
+			await expect.poll(() => handlerStarted).toBe(true)
+			closing = app.close().then(() => {
+				closed = true
+			})
+			await expect.poll(() => closed).toBe(true)
+			await expect(response).resolves.toBeInstanceOf(Error)
+		} finally {
+			releaseHandler()
+			await response
+			await (closing ?? app.close())
+		}
+	})
+
+	test('listens on a Unix socket and clears its address on close', async () => {
+		// Keep the path below the macOS Unix socket path limit.
+		const directory = mkdtempSync('/tmp/ph-unix-')
+		const socketPath = join(directory, 'http.sock')
+		const adapter = new HonoAdapter()
+		const app = await NestFactory.create(EmptyModule, adapter, {
+			logger: false,
+		})
+		adapter.get('/unix', (_req, ctx) => ctx.text('unix response'))
+		const server = adapter.getHttpServer() as ListeningServer & {
+			address: () => string | null
+		}
+
+		try {
+			await app.listen(socketPath)
+			expect(server.listening).toBe(true)
+			expect(server.address()).toBe(socketPath)
+			const response = await new Promise<{
+				body: string
+				status?: number
+			}>((resolve, reject) => {
+				const clientRequest = request(
+					{ path: '/unix', socketPath },
+					incoming => {
+						const chunks: Buffer[] = []
+						incoming.on('data', chunk => chunks.push(Buffer.from(chunk)))
+						incoming.on('error', reject)
+						incoming.on('end', () => {
+							resolve({
+								body: Buffer.concat(chunks).toString(),
+								status: incoming.statusCode,
+							})
+						})
+					}
+				)
+				clientRequest.on('error', reject)
+				clientRequest.end()
+			})
+			expect(response).toEqual({ body: 'unix response', status: 200 })
+		} finally {
+			await app.close()
+			rmSync(directory, { force: true, recursive: true })
+		}
+		expect(server.listening).toBe(false)
+		expect(server.address()).toBeNull()
 	})
 
 	test('keeps SSE streams open past the Bun idle timeout', async () => {

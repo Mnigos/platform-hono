@@ -4,10 +4,16 @@ import type { Context } from 'hono'
 import {
 	DEFAULT_BODY_LIMIT,
 	type HonoAdapterOptions,
+	type MultipartLimits,
 	type RequestSizeLimit,
 } from '../options'
-import { getRequestHeader, replaceRawRequest } from '../request/request-state'
 import {
+	getRequestHeader,
+	isTransportFramed,
+	replaceRawRequest,
+} from '../request/request-state'
+import {
+	assertMultipartFormLimits,
 	createMultipartLimitScanner,
 	type MultipartLimitScanner,
 } from './multipart-limits'
@@ -24,15 +30,16 @@ export async function parseRequestBody(
 	ctx: Context,
 	rawBody: boolean,
 	parserType?: string,
-	contentType = getRequestHeader(ctx, 'content-type')
+	contentType = getRequestHeader(ctx, 'content-type'),
+	multipartLimits?: MultipartLimits
 ) {
 	if (!shouldParseRequestBody(ctx, parserType, contentType)) return
-	await parseSupportedRequestBody(
-		ctx,
+	await parseSupportedRequestBody(ctx, {
 		contentType,
+		isRawParser: parserType?.toLowerCase() === 'raw',
+		multipartLimits,
 		rawBody,
-		parserType?.toLowerCase() === 'raw'
-	)
+	})
 }
 
 /**
@@ -78,7 +85,7 @@ export function enforceRequestBodyLimit(
 	)
 }
 
-function createUnreadRequest(rawRequest: Request, body: ArrayBuffer | string) {
+function createUnreadRequest(rawRequest: Request, body: ArrayBuffer) {
 	const { method } = rawRequest
 	return new Request(rawRequest.url, {
 		body: method === 'GET' || method === 'HEAD' ? undefined : body,
@@ -161,11 +168,16 @@ function matchesParserType(
 	}
 }
 
+interface ParseBodyOptions {
+	contentType: string | undefined
+	isRawParser: boolean
+	multipartLimits?: MultipartLimits
+	rawBody: boolean
+}
+
 async function parseSupportedRequestBody(
 	ctx: Context,
-	contentType: string | undefined,
-	rawBody: boolean,
-	isRawParser: boolean
+	{ contentType, isRawParser, multipartLimits, rawBody }: ParseBodyOptions
 ) {
 	const req = getNestHonoRequest(ctx.req)
 	const mediaType = getMediaType(contentType)
@@ -177,33 +189,32 @@ async function parseSupportedRequestBody(
 	const isJsonBody = !isRawParser && isJsonMediaType(mediaType)
 	const isTextBody =
 		!(isRawParser || isFormBody) && mediaType?.startsWith('text/')
-	if (!rawBody && (isJsonBody || isTextBody)) {
-		const bodyText = await rawRequest.text()
-		replaceRawRequest(ctx, () => createUnreadRequest(rawRequest, bodyText))
-		req.body = isJsonBody ? parseJsonBody(bodyText) : bodyText
-		return
-	}
 
 	const bodyBuffer = await rawRequest.arrayBuffer().catch(error => {
 		if (isFormBody) throw new BadRequestException('Malformed request body')
 		throw error
 	})
 	replaceRawRequest(ctx, () => createUnreadRequest(rawRequest, bodyBuffer))
-	const bodyBytes = Buffer.from(bodyBuffer)
-	if (rawBody) req.rawBody = bodyBytes
+	if (rawBody || isRawParser) {
+		const bodyBytes = Buffer.from(bodyBuffer)
+		if (rawBody) req.rawBody = bodyBytes
+		if (isRawParser) req.body = bodyBytes
+	}
 
-	if (isRawParser) req.body = bodyBytes
-	else if (isFormBody) {
-		req.body = await new Response(bodyBuffer, {
+	if (isFormBody) {
+		const formData = await new Response(bodyBuffer, {
 			headers: { 'content-type': contentType ?? '' },
 		})
 			.formData()
-			.then(convertFormData)
 			.catch(() => {
 				throw new BadRequestException('Malformed request body')
 			})
-	} else if (isJsonBody) req.body = parseJsonBody(textDecoder.decode(bodyBytes))
-	else if (isTextBody) req.body = textDecoder.decode(bodyBytes)
+		if (mediaType === 'multipart/form-data')
+			assertMultipartFormLimits(formData, multipartLimits)
+		req.body = convertFormData(formData)
+	} else if (isJsonBody)
+		req.body = parseJsonBody(textDecoder.decode(bodyBuffer))
+	else if (isTextBody) req.body = textDecoder.decode(bodyBuffer)
 }
 
 function parseJsonBody(bodyText: string) {
@@ -250,7 +261,8 @@ function enforceRawBodyLimit(
 		if (
 			Number.isFinite(contentLength) &&
 			!multipartScanner &&
-			getRequestHeader(ctx, 'transfer-encoding') === undefined
+			getRequestHeader(ctx, 'transfer-encoding') === undefined &&
+			isTransportFramed(ctx)
 		)
 			return
 	}

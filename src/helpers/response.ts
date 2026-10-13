@@ -135,11 +135,35 @@ function createByteStream(ctx: Context, stream: ReadableStream<unknown>) {
 	})
 }
 
+/**
+ * Converts a Node.js `Readable` into a pull-based Web stream. Unlike
+ * `Readable.toWeb()`, a cancelled stream never receives a late `enqueue()`
+ * from buffered data, which Node.js reports as an uncaught
+ * `ERR_INVALID_STATE` (for example when a `HEAD` request cancels a file).
+ */
+function toWebStream(readable: Readable) {
+	const iterator = readable[Symbol.asyncIterator]()
+	let cancelled = false
+	return new ReadableStream<unknown>({
+		cancel() {
+			cancelled = true
+			readable.destroy()
+			iterator.return?.().catch(() => undefined)
+		},
+		async pull(controller) {
+			const result = await iterator.next().catch(error => {
+				if (cancelled) return { done: true, value: undefined }
+				throw error
+			})
+			if (cancelled) return
+			if (result.done) controller.close()
+			else controller.enqueue(result.value)
+		},
+	})
+}
+
 function createReadableStream(ctx: Context, readable: Readable) {
-	return createByteStream(
-		ctx,
-		Readable.toWeb(readable) as ReadableStream<unknown>
-	)
+	return createByteStream(ctx, toWebStream(readable))
 }
 
 function createStreamResponse(ctx: Context, stream: ReadableStream<unknown>) {
@@ -152,10 +176,7 @@ function createStreamResponse(ctx: Context, stream: ReadableStream<unknown>) {
 }
 
 function createNodeStreamResponse(ctx: Context, readable: Readable) {
-	return createStreamResponse(
-		ctx,
-		Readable.toWeb(readable) as ReadableStream<unknown>
-	)
+	return createStreamResponse(ctx, toWebStream(readable))
 }
 
 function createStreamableFileResponse(ctx: Context, file: StreamableFile) {
@@ -249,7 +270,7 @@ function buildResponse(ctx: Context, body?: unknown): BuiltResponse {
 		return fromElsewhere(ctx.res)
 	}
 
-	if (body !== null && typeof body === 'object' && !(body instanceof Buffer))
+	if (typeof body === 'object' && !(body instanceof Buffer))
 		return fromContext(createJsonResponse(ctx, body))
 	if (body instanceof Buffer)
 		return fromContext(createBufferResponse(ctx, body))
@@ -270,23 +291,61 @@ function createBufferResponse(ctx: Context, body: Buffer) {
 	return withNodeResponse(ctx, () => ctx.body(body as unknown as string))
 }
 
+const contextsWithHeaders = new WeakSet<Context>()
+
 /**
- * Serializes object bodies as JSON without reading the context headers first:
- * the response is built, and its `Content-Type` is checked afterwards. A
- * missing or `text/plain` type becomes `application/json`; JSON types are
- * kept; any other explicit type keeps its plain body conversion.
+ * Records that response headers were set through the adapter, so object
+ * replies read the `Content-Type` before serializing instead of after.
+ */
+export function markResponseHeadersSet(ctx: Context) {
+	contextsWithHeaders.add(ctx)
+}
+
+function usesJsonBody(contentType: string | null) {
+	return (
+		contentType === null ||
+		contentType.startsWith('text/plain') ||
+		isJsonContentType(contentType)
+	)
+}
+
+function createPlainResponse(ctx: Context, body: object | null) {
+	return withNodeResponse(ctx, () => ctx.body(body as unknown as string))
+}
+
+function createSerializedResponse(ctx: Context, json: string) {
+	const response = withNodeResponse(ctx, () => ctx.newResponse(json))
+	const contentType = response.headers.get('Content-Type')
+	if (contentType === null || contentType.startsWith('text/plain'))
+		response.headers.set('Content-Type', 'application/json')
+	return response
+}
+
+/**
+ * Serializes object bodies (and `null`) as JSON. A missing or `text/plain`
+ * type becomes `application/json`, JSON types are kept, and any other
+ * explicit type keeps the plain body conversion. When headers were set
+ * through the adapter, the type is checked before serializing; otherwise the
+ * type is read from the built response, which avoids materializing
+ * `ctx.res`, and a serialization error falls back to the type check.
  */
 function createJsonResponse(ctx: Context, body: object | null) {
-	const response = withNodeResponse(ctx, () =>
-		ctx.newResponse(JSON.stringify(body))
-	)
-	const contentType = response.headers.get('Content-Type')
-	if (contentType === null || contentType.startsWith('text/plain')) {
-		response.headers.set('Content-Type', 'application/json')
-		return response
+	if (contextsWithHeaders.has(ctx)) {
+		if (!usesJsonBody(ctx.res.headers.get('Content-Type')))
+			return createPlainResponse(ctx, body)
+		return createSerializedResponse(ctx, JSON.stringify(body))
 	}
-	if (isJsonContentType(contentType)) return response
-	return withNodeResponse(ctx, () => ctx.body(body as unknown as string))
+
+	let json: string
+	try {
+		json = JSON.stringify(body)
+	} catch (error) {
+		if (usesJsonBody(ctx.res.headers.get('Content-Type'))) throw error
+		return createPlainResponse(ctx, body)
+	}
+	const response = createSerializedResponse(ctx, json)
+	if (usesJsonBody(response.headers.get('Content-Type'))) return response
+	return createPlainResponse(ctx, body)
 }
 
 function withNodeResponse(ctx: Context, build: () => Response) {

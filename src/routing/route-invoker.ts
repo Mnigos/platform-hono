@@ -108,7 +108,7 @@ export function createRouteHandler({
 	return async (ctx, next) => {
 		const state = getRequestState(ctx, adapterOptions)
 		syncRawRequest(state)
-		setRouteParams(ctx, optionalParameterSuffixes)
+		setRouteParams(state, optionalParameterSuffixes)
 		const handlerPromise = invokeHandler(routeHandler, ctx, next, waitForNext)
 		const result = await waitForRouteResult(state, handlerPromise)
 		if (result.type === 'sse') {

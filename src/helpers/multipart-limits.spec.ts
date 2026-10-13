@@ -14,10 +14,14 @@ async function encodeMultipart(entries: MultipartEntry[]) {
 		if (filename) formData.append(name, new Blob([content]), filename)
 		else formData.append(name, content)
 	}
-	const response = new Response(formData)
+	const request = new Request('http://localhost/upload', {
+		method: 'POST',
+		body: formData,
+	})
+	const contentType = request.headers.get('content-type') ?? ''
 	return {
-		body: new Uint8Array(await response.arrayBuffer()),
-		contentType: response.headers.get('content-type') ?? '',
+		body: new Uint8Array(await request.arrayBuffer()),
+		contentType,
 	}
 }
 
@@ -121,6 +125,20 @@ describe('createMultipartLimitScanner', () => {
 		expect(() => scanner?.write(encoder.encode('1234567890123456'))).toThrow(
 			new PayloadTooLargeException('File too large')
 		)
+	})
+
+	test('rejects a complete part header over 16 KiB in one chunk', () => {
+		const scanner = createMultipartLimitScanner(
+			'multipart/form-data; boundary=edge',
+			{ parts: 1 }
+		)
+		expect(() =>
+			scanner?.write(
+				Buffer.from(
+					`--edge\r\nContent-Disposition: form-data; name="${'x'.repeat(17 * 1024)}"\r\n\r\nvalue\r\n--edge--\r\n`
+				)
+			)
+		).toThrow(new BadRequestException('Malformed request body'))
 	})
 
 	test('rejects oversized part headers as malformed', () => {

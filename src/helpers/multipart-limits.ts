@@ -1,11 +1,14 @@
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common'
 import type { MultipartLimits } from '../options'
+import { classifyMultipartPart } from './multipart-part'
 
-type ScannerState = 'body' | 'done' | 'headers'
+type ScannerState = 'body' | 'done' | 'headers' | 'preamble'
 
-const BOUNDARY_REGEX = /;\s*boundary=(?:"([^"]+)"|([^;\s]+))/i
-const FILE_PART_REGEX = /^content-disposition:[^\r\n]*;\s*filename\*?=/im
+const BOUNDARY_PARAMETER_REGEX = /boundary\s*=/gi
+const BOUNDARY_VALUE_REGEX = /^\s*(?:"([^"]*)"|([^;\s]+))/
 const HEADER_END = Buffer.from('\r\n\r\n')
+const CR = 13
+const LF = 10
 const DASH = 45
 const MAX_PART_HEADER_BYTES = 16 * 1024
 
@@ -14,72 +17,120 @@ const MAX_PART_HEADER_BYTES = 16 * 1024
  * configured part, field, file, or file size limit is exceeded, before the
  * remaining body is read or `Request.formData()` buffers it. Status codes
  * follow Nest's multer mapping: 413 for file size, 400 for count limits.
+ *
+ * Where Bun's and undici's `formData()` parsers disagree, the scanner counts
+ * the larger interpretation: only `--boundary` followed by CRLF opens a part,
+ * a close delimiter only counts when followed by CRLF, anything else stays
+ * part data, and parts either parser may treat as files count as files.
  */
 export class MultipartLimitScanner {
-	private carry: Buffer = Buffer.from('\r\n')
+	private carry: Buffer = Buffer.alloc(0)
 	private fields = 0
 	private files = 0
-	private inPart = false
 	private isFile = false
 	private partSize = 0
 	private parts = 0
-	private state: ScannerState = 'body'
+	private state: ScannerState = 'preamble'
+	private tailStart?: number
+	private readonly dashBoundary: Buffer
 	private readonly delimiter: Buffer
 	private readonly limits: MultipartLimits
 
 	constructor(boundary: string, limits: MultipartLimits) {
+		this.dashBoundary = Buffer.from(`--${boundary}`)
 		this.delimiter = Buffer.from(`\r\n--${boundary}`)
 		this.limits = limits
 	}
 
 	write(chunk: Uint8Array) {
 		if (this.state === 'done') return
-		const buffer = Buffer.concat([this.carry, chunk])
+		const buffer = this.carry.length
+			? Buffer.concat([this.carry, chunk])
+			: Buffer.from(chunk.buffer, chunk.byteOffset, chunk.byteLength)
 		let offset = 0
+		this.tailStart = undefined
 
-		while (this.state !== 'done') {
-			if (this.state === 'headers') {
-				const headerEnd = buffer.indexOf(HEADER_END, offset)
-				if (headerEnd === -1) {
-					if (buffer.length - offset > MAX_PART_HEADER_BYTES)
-						throw new BadRequestException('Malformed request body')
-					break
-				}
-				this.startPart(buffer.toString('latin1', offset, headerEnd))
-				offset = headerEnd + HEADER_END.length
-				this.state = 'body'
-				continue
-			}
+		while (!this.isDone() && this.tailStart === undefined)
+			offset = this.scan(buffer, offset)
 
-			const delimiterIndex = buffer.indexOf(this.delimiter, offset)
-			if (delimiterIndex === -1) {
-				const scannedEnd = Math.max(
-					offset,
-					buffer.length - this.delimiter.length + 1
-				)
-				this.addPartBytes(scannedEnd - offset)
-				offset = scannedEnd
-				break
-			}
+		this.carry =
+			this.tailStart === undefined
+				? Buffer.alloc(0)
+				: Buffer.from(buffer.subarray(this.tailStart))
+	}
 
-			this.addPartBytes(delimiterIndex - offset)
-			offset = delimiterIndex
-			const afterDelimiter = delimiterIndex + this.delimiter.length
-			if (buffer.length < afterDelimiter + 2) break
+	private isDone() {
+		return this.state === 'done'
+	}
 
-			this.inPart = false
-			offset = afterDelimiter
-			this.state =
-				buffer[afterDelimiter] === DASH && buffer[afterDelimiter + 1] === DASH
-					? 'done'
-					: 'headers'
+	private keep(offset: number) {
+		this.tailStart = offset
+		return offset
+	}
+
+	private scan(buffer: Buffer, offset: number) {
+		if (this.state === 'headers') return this.scanHeaders(buffer, offset)
+		if (this.state === 'preamble') return this.scanPreamble(buffer, offset)
+		return this.scanBody(buffer, offset)
+	}
+
+	private scanPreamble(buffer: Buffer, offset: number) {
+		const index = buffer.indexOf(this.dashBoundary, offset)
+		if (index === -1)
+			return this.keep(
+				Math.max(offset, buffer.length - this.dashBoundary.length + 1)
+			)
+		const afterBoundary = index + this.dashBoundary.length
+		if (buffer.length < afterBoundary + 2) return this.keep(index)
+		if (buffer[afterBoundary] === CR && buffer[afterBoundary + 1] === LF) {
+			this.state = 'headers'
+			return afterBoundary
+		}
+		return index + 1
+	}
+
+	private scanHeaders(buffer: Buffer, offset: number) {
+		const headerEnd = buffer.indexOf(HEADER_END, offset)
+		if (headerEnd === -1) {
+			if (buffer.length - offset > MAX_PART_HEADER_BYTES)
+				throw new BadRequestException('Malformed request body')
+			return this.keep(offset)
+		}
+		if (headerEnd - offset > MAX_PART_HEADER_BYTES)
+			throw new BadRequestException('Malformed request body')
+		this.startPart(buffer.toString('latin1', offset + 2, headerEnd))
+		this.state = 'body'
+		return headerEnd + HEADER_END.length
+	}
+
+	private scanBody(buffer: Buffer, offset: number) {
+		const index = buffer.indexOf(this.delimiter, offset)
+		if (index === -1) {
+			const scannedEnd = Math.max(
+				offset,
+				buffer.length - this.delimiter.length + 1
+			)
+			this.addPartBytes(scannedEnd - offset)
+			return this.keep(scannedEnd)
 		}
 
-		this.carry = Buffer.from(buffer.subarray(offset))
+		this.addPartBytes(index - offset)
+		const afterDelimiter = index + this.delimiter.length
+		const isClose =
+			buffer[afterDelimiter] === DASH && buffer[afterDelimiter + 1] === DASH
+		const suffixStart = isClose ? afterDelimiter + 2 : afterDelimiter
+		if (buffer.length < suffixStart + 2) return this.keep(index)
+		if (buffer[suffixStart] === CR && buffer[suffixStart + 1] === LF) {
+			this.state = isClose ? 'done' : 'headers'
+			return afterDelimiter
+		}
+
+		this.addPartBytes(1)
+		return index + 1
 	}
 
 	private addPartBytes(byteCount: number) {
-		if (!(this.inPart && this.isFile)) return
+		if (!this.isFile || byteCount <= 0) return
 		this.partSize += byteCount
 		const { fileSize } = this.limits
 		if (fileSize !== undefined && this.partSize > fileSize)
@@ -87,21 +138,87 @@ export class MultipartLimitScanner {
 	}
 
 	private startPart(headers: string) {
-		this.inPart = true
-		this.isFile = FILE_PART_REGEX.test(headers)
+		const { possiblyFile, possiblyField } = classifyMultipartPart(headers)
+		this.isFile = possiblyFile
 		this.partSize = 0
 		this.parts += 1
-		if (this.isFile) this.files += 1
-		else this.fields += 1
-
-		const { fields, files, parts } = this.limits
-		if (parts !== undefined && this.parts > parts)
-			throw new BadRequestException('Too many parts')
-		if (files !== undefined && this.files > files)
-			throw new BadRequestException('Too many files')
-		if (fields !== undefined && this.fields > fields)
-			throw new BadRequestException('Too many fields')
+		if (possiblyFile) this.files += 1
+		if (possiblyField) this.fields += 1
+		assertMultipartCounts(
+			{ fields: this.fields, files: this.files, parts: this.parts },
+			this.limits
+		)
 	}
+}
+
+interface MultipartCounts {
+	fields: number
+	files: number
+	parts: number
+}
+
+/**
+ * Throws when part, file, or field counts exceed the configured limits.
+ */
+export function assertMultipartCounts(
+	counts: MultipartCounts,
+	limits: MultipartLimits
+) {
+	if (limits.parts !== undefined && counts.parts > limits.parts)
+		throw new BadRequestException('Too many parts')
+	if (limits.files !== undefined && counts.files > limits.files)
+		throw new BadRequestException('Too many files')
+	if (limits.fields !== undefined && counts.fields > limits.fields)
+		throw new BadRequestException('Too many fields')
+}
+
+/**
+ * Checks multipart limits against the parsed `FormData`, so the limits hold
+ * for the runtime parser's own interpretation of the body as well.
+ */
+export function assertMultipartFormLimits(
+	formData: Iterable<[string, unknown]>,
+	limits: MultipartLimits | undefined
+) {
+	if (!hasMultipartLimits(limits)) return
+	const counts: MultipartCounts = { fields: 0, files: 0, parts: 0 }
+	for (const [, value] of formData) {
+		counts.parts += 1
+		if (typeof value === 'string') {
+			counts.fields += 1
+			continue
+		}
+		counts.files += 1
+		if (limits.fileSize !== undefined && (value as Blob).size > limits.fileSize)
+			throw new PayloadTooLargeException('File too large')
+	}
+	assertMultipartCounts(counts, limits)
+}
+
+function hasMultipartLimits(
+	limits: MultipartLimits | undefined
+): limits is MultipartLimits {
+	return (
+		limits !== undefined &&
+		Object.values(limits).some(limit => limit !== undefined)
+	)
+}
+
+/**
+ * Reads the multipart boundary. A `Content-Type` that mentions `boundary=`
+ * more than once is rejected, because Bun picks the first `boundary=`
+ * substring while undici reads the `boundary` parameter.
+ */
+function getBoundary(contentType: string) {
+	const matches = [...contentType.matchAll(BOUNDARY_PARAMETER_REGEX)]
+	if (matches.length > 1)
+		throw new BadRequestException('Malformed request body')
+	const [match] = matches
+	if (match?.index === undefined) return
+	const value = contentType
+		.slice(match.index + match[0].length)
+		.match(BOUNDARY_VALUE_REGEX)
+	return value?.[1] || value?.[2] || undefined
 }
 
 /**
@@ -112,16 +229,14 @@ export function createMultipartLimitScanner(
 	contentType: string | undefined,
 	limits: MultipartLimits | undefined
 ) {
-	if (!(limits && Object.values(limits).some(limit => limit !== undefined)))
-		return
+	if (!hasMultipartLimits(limits)) return
 	if (
 		contentType?.split(';', 1)[0]?.trim().toLowerCase() !==
 		'multipart/form-data'
 	)
 		return
 
-	const match = contentType.match(BOUNDARY_REGEX)
-	const boundary = match?.[1] ?? match?.[2]
+	const boundary = getBoundary(contentType)
 	if (!boundary) return
 
 	return new MultipartLimitScanner(boundary, limits)
