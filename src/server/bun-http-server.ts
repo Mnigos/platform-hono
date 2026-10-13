@@ -52,6 +52,9 @@ export function toBunTlsOptions(httpsOptions: HttpsServerOptions) {
  * and the adapter call: `listen`, `address`, `close`, and the `listening`,
  * `error`, and `close` events. Bun ignores a forced `stop(true)` once a
  * graceful stop has started, so `forceCloseConnections` is applied by `close`.
+ * A forced stop closes every socket at once, but its promise still waits for
+ * running handlers, so `close` completes without waiting for it, like
+ * Node.js `server.close()` after `closeAllConnections()`.
  */
 export class BunHttpServer extends EventEmitter {
 	private server?: Bun.Server<undefined>
@@ -115,13 +118,17 @@ export class BunHttpServer extends EventEmitter {
 
 		this.server = undefined
 		this.unixSocketPath = undefined
-		server.stop(this.forceCloseConnections).then(
-			() => {
-				this.emit('close')
-				callback?.()
-			},
-			(error: Error) => callback?.(error)
-		)
+		const finish = () => {
+			this.emit('close')
+			callback?.()
+		}
+		const stopped = server.stop(this.forceCloseConnections)
+		if (this.forceCloseConnections) {
+			stopped.catch(() => undefined)
+			process.nextTick(finish)
+			return this
+		}
+		stopped.then(finish, (error: Error) => callback?.(error))
 		return this
 	}
 

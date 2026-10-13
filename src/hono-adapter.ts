@@ -19,6 +19,7 @@ import {
 	finalizeResponse,
 	getFinalizedResponse,
 	isJsonContentType,
+	markResponseHeadersSet,
 } from './helpers/response'
 import {
 	registerStaticAssets,
@@ -163,8 +164,9 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	status(ctx: Context, statusCode: number) {
 		ctx.status(statusCode as Parameters<Context['status']>[0])
-		const sseStream = getRequestState(ctx, this.adapterOptions).sse?.stream
-		if (sseStream) sseStream.statusCode = statusCode
+		const state = getRequestState(ctx, this.adapterOptions)
+		state.statusCode = statusCode
+		if (state.sse) state.sse.stream.statusCode = statusCode
 	}
 
 	end() {
@@ -222,10 +224,12 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	setHeader(ctx: Context, name: string, value: string) {
+		markResponseHeadersSet(ctx)
 		ctx.res.headers.set(name, value)
 	}
 
 	appendHeader(ctx: Context, name: string, value: string) {
+		markResponseHeadersSet(ctx)
 		ctx.res.headers.append(name, value)
 	}
 

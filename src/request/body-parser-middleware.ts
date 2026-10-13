@@ -29,13 +29,20 @@ export function createParserMiddleware({
 }: ParserMiddlewareOptions) {
 	return (ctx: Context, next: () => Promise<void>) => {
 		const state = getRequestState(ctx, adapterOptions)
+		syncRawRequest(state)
 		const contentType = getContentType(state)
 		if (contentType === undefined) return next()
 		const parserType = parserTypes.find(type =>
 			shouldParseRequestBody(ctx, type, contentType)
 		)
 		if (parserType === undefined || shouldSkipBodyParser(state)) return next()
-		return parseRequestBody(ctx, rawBody, parserType, contentType).then(() => {
+		return parseRequestBody(
+			ctx,
+			rawBody,
+			parserType,
+			contentType,
+			adapterOptions.multipartLimits
+		).then(() => {
 			syncRawRequest(state)
 			return next()
 		})

@@ -199,7 +199,11 @@ soon as it crosses a limit, before the rest of the body is read or parsed.
 Status codes match Nest's multer integration: a file over `fileSize` is
 rejected as payload-too-large (413, `File too large`), and too many files,
 fields, or parts as a bad request (400, `Too many files`, `Too many fields`,
-`Too many parts`). The body limits still apply to the whole multipart body. Like `bodyLimit`, multipart limits
+`Too many parts`). The body limits still apply to the whole multipart body.
+The parsed `FormData` is checked against the same limits as well. Where Bun's
+and Node.js's multipart parsers read a body differently, the streaming check
+counts the larger interpretation, and a `Content-Type` with more than one
+`boundary=` is rejected as a bad request. Like `bodyLimit`, multipart limits
 also apply to routes listed in `skipBodyParserFor`.
 
 ## Proxy Trust

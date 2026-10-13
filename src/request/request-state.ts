@@ -1,4 +1,5 @@
 import type { Context } from 'hono'
+import { getBunServer } from '../helpers/bun-server'
 import { extractClientIp } from '../helpers/client-ip'
 import { isPathMatch } from '../helpers/path-matching'
 import { getNestHonoRequest, type NestHonoRequest } from '../helpers/request'
@@ -34,6 +35,7 @@ interface NodeRequestBindings {
 export interface RequestState {
 	contentType?: string | null
 	ctx: Context
+	currentRaw?: Request
 	headers?: Record<string, string>
 	incoming?: NodeIncoming
 	ip?: string | null
@@ -43,10 +45,12 @@ export interface RequestState {
 	pathname: string
 	pendingRawRequest?: () => Request
 	rawRequest: Request
+	routeParams?: Record<string, string>
 	skipBodyParser?: boolean
 	socketBridge?: RequestSocketBridge
 	sse?: SseBridge
 	sseWaiter?: (response: Response) => void
+	statusCode?: number
 }
 
 const REQUEST_STATE = Symbol('platformHonoRequestState')
@@ -234,6 +238,20 @@ function createQuery(ctx: Context) {
 }
 
 /**
+ * Recomputes request metadata after middleware replaced `ctx.req.raw`, for
+ * example to rewrite the URL. The original transport request stays in
+ * `state.rawRequest` for runtime APIs such as Bun's `requestIP()`.
+ */
+function adoptReplacedRequest(state: RequestState, rawRequest: Request) {
+	state.currentRaw = rawRequest
+	state.contentType = undefined
+	state.method = rawRequest.method
+	state.pathname = getUrlPathname(rawRequest.url)
+	state.skipBodyParser = undefined
+	getNestHonoRequest(state.ctx.req).baseUrl = state.pathname
+}
+
+/**
  * Attaches the Nest `req.on()` bridge and, on Node.js, the lazy socket bridge
  * to the current raw request. Call it again after `ctx.req.raw` is replaced.
  */
@@ -241,6 +259,7 @@ export function syncRawRequest(state: RequestState) {
 	if (state.pendingRawRequest) return
 	const rawRequest = state.ctx.req.raw as Request & Partial<StateCarrier>
 	if (rawRequest[REQUEST_STATE] === state) return
+	if (rawRequest !== state.rawRequest) adoptReplacedRequest(state, rawRequest)
 	rawRequest[REQUEST_STATE] = state
 	rawRequest.on = state.on
 	if (state.incoming?.socket && !rawRequest.socket)
@@ -328,9 +347,10 @@ interface OptionalParameterSuffixLike {
  * from optional parameters such as `/:file{.json}`.
  */
 export function setRouteParams(
-	ctx: Context,
+	state: RequestState,
 	optionalParameterSuffixes: readonly OptionalParameterSuffixLike[]
 ) {
+	const { ctx } = state
 	const params = ctx.req.param()
 	for (let index = optionalParameterSuffixes.length - 1; index >= 0; index--) {
 		const suffixEntry = optionalParameterSuffixes[index]
@@ -340,17 +360,56 @@ export function setRouteParams(
 		if (value && value.length > suffix.length && value.endsWith(suffix))
 			params[name] = value.slice(0, -suffix.length)
 	}
-	getNestHonoRequest(ctx.req).params = params
+	const req = getNestHonoRequest(ctx.req)
+	const previousParams = state.routeParams
+	state.routeParams = { ...params }
+	if (previousParams && req.params)
+		keepParameterEdits(params, previousParams, req.params)
+	req.params = params
 }
 
 /**
- * Whether the request can carry a body. HTTP/1.1 requests without
- * `Content-Length` or `Transfer-Encoding` have none, and Fetch `GET`/`HEAD`
- * requests (`Bun.serve`) never expose one, so body limits can skip them
- * without touching the body stream.
+ * Carries edits an earlier layer (such as Nest middleware) made to
+ * `req.params` into the next layer's params, as long as the route matched the
+ * same value for that parameter.
+ */
+function keepParameterEdits(
+	params: Record<string, string>,
+	previousParams: Record<string, string>,
+	editedParams: Record<string, string>
+) {
+	for (const [name, value] of Object.entries(editedParams)) {
+		if (previousParams[name] === value) continue
+		if (!(name in params) || previousParams[name] === params[name])
+			params[name] = value
+	}
+	for (const name of Object.keys(previousParams))
+		if (!(name in editedParams) && previousParams[name] === params[name])
+			delete params[name]
+}
+
+/**
+ * Whether the request arrived through a server that enforces HTTP framing
+ * (`@hono/node-server` or `Bun.serve`), so its body cannot be longer than the
+ * declared `Content-Length`. Direct `hono.fetch()`/`hono.request()` calls are
+ * not framed and must have their bodies counted.
+ */
+export function isTransportFramed(ctx: Context) {
+	return (
+		getNodeBindings(ctx).incoming !== undefined ||
+		getBunServer(ctx) !== undefined
+	)
+}
+
+/**
+ * Whether the request can carry a body. For transport-framed requests,
+ * HTTP/1.1 requests without `Content-Length` or `Transfer-Encoding` have none,
+ * and `Bun.serve` never exposes `GET`/`HEAD` bodies, so body limits can skip
+ * them without touching the body stream. Other requests are checked by body.
  */
 export function mayHaveRequestBody(state: RequestState) {
 	const { incoming, method, rawRequest } = state
+	if (!(incoming || getBunServer(state.ctx))) return rawRequest.body !== null
 	if (!incoming && (method === 'GET' || method === 'HEAD')) return false
 	if (
 		readRequestHeader(rawRequest, incoming, 'transfer-encoding') !== undefined
@@ -370,7 +429,12 @@ export function mayHaveRequestBody(state: RequestState) {
 export function getContentType(state: RequestState) {
 	if (state.contentType === undefined)
 		state.contentType =
-			readRequestHeader(state.rawRequest, state.incoming, 'content-type') ??
-			null
+			(state.currentRaw
+				? state.currentRaw.headers.get('content-type')
+				: readRequestHeader(
+						state.rawRequest,
+						state.incoming,
+						'content-type'
+					)) ?? null
 	return state.contentType ?? undefined
 }

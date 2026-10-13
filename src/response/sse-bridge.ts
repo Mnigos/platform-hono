@@ -61,6 +61,7 @@ function createSseBridge(state: RequestState) {
 	const { ctx } = state
 	const stream = new PassThrough() as HonoSseWritable
 	const bridge: SseBridge = { started: false, stream }
+	if (state.statusCode !== undefined) stream.statusCode = state.statusCode
 	stream.getHeaders = () => getResponseHeaders(ctx)
 	stream.setHeader = (name, value) => {
 		setResponseHeader(ctx, name, value)
@@ -68,7 +69,7 @@ function createSseBridge(state: RequestState) {
 	stream.flushHeaders = () => undefined
 	stream.writeHead = (statusCode, reasonPhraseOrHeaders, headers) => {
 		bridge.started = true
-		getBunServer(ctx)?.timeout(ctx.req.raw, 0)
+		getBunServer(ctx)?.timeout(state.rawRequest, 0)
 		const outgoingHeaders =
 			typeof reasonPhraseOrHeaders === 'string'
 				? headers

@@ -36,12 +36,13 @@ import {
 	StreamableFile,
 	UseFilters,
 	UseGuards,
+	Version,
 } from '@nestjs/common'
 import type { NestApplicationOptions } from '@nestjs/common/interfaces'
 import { NestFactory } from '@nestjs/core'
 import type { Context } from 'hono'
 import { Observable } from 'rxjs'
-import { HonoAdapter } from '../../../src'
+import { HonoAdapter, type NestHonoRequest } from '../../../src'
 
 interface CapturedRequest {
 	baseUrl?: string
@@ -107,6 +108,60 @@ export function getRequestCloseCalls() {
 	return requestCloseCalls
 }
 
+interface RequestStateSnapshot {
+	baseUrl?: string
+	headers: Record<string, string>
+	ip?: string
+	params: Record<string, string>
+	query: Record<string, string | string[]>
+	queryHasNullPrototype: boolean
+	stage: string
+}
+
+export interface StateRequest extends NestHonoRequest {
+	params: Record<string, string>
+	query: Record<string, string | string[]>
+	stateTrace?: RequestStateSnapshot[]
+}
+
+export function captureRequestState(req: StateRequest, stage: string) {
+	const snapshot = {
+		baseUrl: req.baseUrl,
+		headers: { ...req.headers },
+		ip: req.ip,
+		params: { ...req.params },
+		query: { ...req.query },
+		queryHasNullPrototype: Object.getPrototypeOf(req.query) === null,
+		stage,
+	}
+	req.stateTrace ??= []
+	req.stateTrace.push(snapshot)
+	return snapshot
+}
+
+@Injectable()
+class RequestStateGuard implements CanActivate {
+	canActivate(context: ExecutionContext) {
+		captureRequestState(
+			context.switchToHttp().getRequest<StateRequest>(),
+			'guard'
+		)
+		return true
+	}
+}
+
+@Injectable()
+class RequestStateMiddleware implements NestMiddleware {
+	use(req: StateRequest, _response: Context, next: () => void) {
+		captureRequestState(req, 'middleware')
+		if (req.headers?.['x-mutate-state'] === 'yes') {
+			req.query.changed = 'middleware'
+			req.params.file = 'changed'
+		}
+		next()
+	}
+}
+
 @Injectable()
 class RequestBodyCompatibilityGuard implements CanActivate {
 	canActivate(context: ExecutionContext) {
@@ -159,6 +214,14 @@ class TestController {
 			id,
 			query,
 		}
+	}
+
+	@Get('/state/:file{.json}')
+	@Version('1')
+	@UseGuards(RequestStateGuard)
+	state(@Req() req: StateRequest) {
+		captureRequestState(req, 'handler')
+		return req.stateTrace
 	}
 
 	@Post('/echo')
@@ -386,10 +449,20 @@ class TestController {
 
 @Module({
 	controllers: [HostController, TestController],
-	providers: [RequestBodyCompatibilityGuard, TestMiddleware],
+	providers: [
+		RequestBodyCompatibilityGuard,
+		TestMiddleware,
+		RequestStateGuard,
+		RequestStateMiddleware,
+	],
 })
 class TestModule implements NestModule {
 	configure(consumer: MiddlewareConsumer) {
+		consumer.apply(RequestStateMiddleware).forRoutes({
+			method: RequestMethod.GET,
+			path: '/state/:file{.json}',
+			version: '1',
+		})
 		consumer
 			.apply(TestMiddleware)
 			.exclude({ path: '/middleware/excluded', method: RequestMethod.GET })

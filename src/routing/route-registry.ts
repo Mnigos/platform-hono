@@ -147,8 +147,9 @@ export class RouteRegistry {
 		const middleware: MiddlewareHandler = async (ctx, next) => {
 			if (invokedContexts.has(ctx)) return next()
 			invokedContexts.add(ctx)
-			syncRawRequest(getRequestState(ctx, this.adapterOptions))
-			setRouteParams(ctx, optionalParameterSuffixes)
+			const state = getRequestState(ctx, this.adapterOptions)
+			syncRawRequest(state)
+			setRouteParams(state, optionalParameterSuffixes)
 			const response = await invokeHandler(callback, ctx, next, true)
 			if (response instanceof Response) return response
 		}
