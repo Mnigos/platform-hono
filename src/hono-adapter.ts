@@ -11,10 +11,10 @@ import { type Context, Hono } from 'hono'
 import { createBodyLimit, parseBodyLimit } from './helpers/body-parser'
 import { createCorsMiddleware, type NestCorsOptions } from './helpers/cors'
 import {
-	createSecurityHookMiddleware,
 	createShutdownMiddleware,
 	installNest12Members,
 	type Nest12ApplicationOptions,
+	runSecurityHooks,
 	type SecurityRequestHook,
 } from './helpers/nest-12'
 import { getRequestHostname, getRequestPathWithSearch } from './helpers/request'
@@ -56,12 +56,19 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	private readonly logger = new Logger('HonoAdapter')
 	private forceCloseConnections = false
 	private isShuttingDown = false
+	private readonly securityHooks: SecurityRequestHook[] = []
 	private readonly routes: RouteRegistry
 
 	constructor(options: HonoAdapterOptions = {}) {
 		super(new Hono())
 		this.adapterOptions = options
 		this.routes = new RouteRegistry(this.hono, options)
+		this.hono.use((ctx, next) => {
+			getRequestState(ctx, this.adapterOptions)
+			if (this.securityHooks.length > 0)
+				runSecurityHooks(ctx, getNestRequest(ctx.req), this.securityHooks)
+			return next()
+		})
 	}
 
 	get hono() {
@@ -328,9 +335,14 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		this.routes.register('query', ...args)
 	}
 
-	/** Installed as `registerSecurityHook` below. */
+	/**
+	 * Installed as `registerSecurityHook` below. Hooks run in the adapter's
+	 * first Hono layer, before body limits and parsing, so early rejections
+	 * also carry the security headers (like Express, where the hook is
+	 * registered before Nest's body parsers).
+	 */
 	addSecurityHook(hook: SecurityRequestHook) {
-		this.hono.use(createSecurityHookMiddleware(hook))
+		this.securityHooks.push(hook)
 	}
 
 	/**

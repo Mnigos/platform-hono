@@ -301,6 +301,44 @@ describe('response helpers', () => {
 		expect(cancelSpy).toHaveBeenCalledOnce()
 	})
 
+	test('reports Node stream errors emitted before the first read to the consumer', async () => {
+		const readable = new Readable({
+			read() {
+				return
+			},
+		})
+		const response = createResponse(await getContext(), readable)
+
+		expect(() =>
+			readable.emit('error', new Error('startup failed'))
+		).not.toThrow()
+		await expect(response.text()).rejects.toThrow('startup failed')
+	})
+
+	test('reports a failing Node stream construct() to the consumer', async () => {
+		const readable = new Readable({
+			construct(callback) {
+				callback(new Error('construct failed'))
+			},
+			read() {
+				return
+			},
+		})
+		const response = createResponse(await getContext(), readable)
+		await delay(10)
+
+		await expect(response.text()).rejects.toThrow('construct failed')
+	})
+
+	test('ends the web stream with an error when a Node stream closes early', async () => {
+		const readable = new PassThrough()
+		const response = createResponse(await getContext(), readable)
+		readable.write('partial')
+		readable.destroy()
+
+		await expect(response.text()).rejects.toThrow('Premature close')
+	})
+
 	test('destroys Node response streams when the client disconnects', async () => {
 		const stream = new PassThrough()
 

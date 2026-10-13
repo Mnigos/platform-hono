@@ -23,20 +23,24 @@ export interface Nest12ApplicationOptions {
 }
 
 /**
- * Wraps a Nest 12 security hook (`app.useSecurityHeaders()`,
- * `app.enableCsrfProtection()`) as Hono middleware. Thrown errors reach the
- * Nest exception layer through Hono's error handler.
+ * Runs Nest 12 security hooks (`app.useSecurityHeaders()`,
+ * `app.enableCsrfProtection()`) for a request: headers go onto the Hono
+ * context, and the first returned error is thrown to Nest's exception layer
+ * through Hono's error handler. Hooks receive Nest's request view, the same
+ * object Nest middleware and handlers get.
  */
-export function createSecurityHookMiddleware(
-	hook: SecurityRequestHook
-): MiddlewareHandler {
-	return (ctx, next) => {
-		const error = hook(ctx.req, {
-			removeHeader: name => ctx.header(name, undefined),
-			setHeader: (name, value) => ctx.header(name, value),
-		})
+export function runSecurityHooks(
+	ctx: Context,
+	request: Context['req'],
+	hooks: readonly SecurityRequestHook[]
+) {
+	const response: SecurityHookResponse = {
+		removeHeader: name => ctx.header(name, undefined),
+		setHeader: (name, value) => ctx.header(name, value),
+	}
+	for (const hook of hooks) {
+		const error = hook(request, response)
 		if (error) throw error
-		return next()
 	}
 }
 

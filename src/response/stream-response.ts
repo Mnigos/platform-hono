@@ -92,28 +92,64 @@ function createByteStream(ctx: Context, stream: ReadableStream<unknown>) {
 }
 
 /**
- * Converts a Node.js `Readable` into a pull-based Web stream. Unlike
- * `Readable.toWeb()`, a cancelled stream never receives a late `enqueue()`
- * from buffered data, which Node.js reports as an uncaught
- * `ERR_INVALID_STATE` (for example when a `HEAD` request cancels a file).
+ * Converts a Node.js `Readable` into a pull-based Web stream. Listeners are
+ * attached synchronously, so an error emitted before the first read (for
+ * example from a failing `construct()`) is held for the consumer instead of
+ * becoming an uncaught exception. Unlike `Readable.toWeb()`, a cancelled
+ * stream never receives a late `enqueue()` from buffered data, which Node.js
+ * reports as an uncaught `ERR_INVALID_STATE` (for example when a `HEAD`
+ * request cancels a file).
  */
 function toWebStream(readable: Readable) {
-	const iterator = readable[Symbol.asyncIterator]()
 	let cancelled = false
+	let ended = false
+	let failure: { error: unknown } | undefined
+	let wake: (() => void) | undefined
+	const notify = () => {
+		const resume = wake
+		wake = undefined
+		resume?.()
+	}
+	readable.on('readable', notify)
+	readable.once('end', () => {
+		ended = true
+		notify()
+	})
+	readable.on('error', error => {
+		failure ??= { error }
+		notify()
+	})
+	readable.once('close', () => {
+		if (!(ended || failure)) failure = { error: new Error('Premature close') }
+		notify()
+	})
+
 	return new ReadableStream<unknown>({
 		cancel() {
 			cancelled = true
 			readable.destroy()
-			iterator.return?.().catch(() => undefined)
+			notify()
 		},
 		async pull(controller) {
-			const result = await iterator.next().catch(error => {
-				if (cancelled) return { done: true, value: undefined }
-				throw error
-			})
-			if (cancelled) return
-			if (result.done) controller.close()
-			else controller.enqueue(result.value)
+			for (;;) {
+				if (cancelled) return
+				if (failure) {
+					controller.error(failure.error)
+					return
+				}
+				const chunk: unknown = readable.read()
+				if (chunk !== null) {
+					controller.enqueue(chunk)
+					return
+				}
+				if (ended) {
+					controller.close()
+					return
+				}
+				await new Promise<void>(resolve => {
+					wake = resolve
+				})
+			}
 		},
 	})
 }

@@ -40,10 +40,21 @@ export function onResponseFinalized(ctx: Context, listener: () => void) {
 }
 
 /**
+ * Reads `ctx.res` once so Hono creates its response from the headers prepared
+ * with `ctx.header()`; Hono's `res` setter then merges them into the
+ * response assigned next.
+ */
+function materializeContextResponse(ctx: Context) {
+	return ctx.res
+}
+
+/**
  * Stores the Fetch response on the Hono context and returns it for Hono's
  * middleware pipeline. Pass `includesContextHeaders` for responses built with
  * `ctx.body()`/`ctx.newResponse()`, which already carry the context headers,
- * so Hono does not copy the response to merge the same headers again.
+ * so Hono does not copy the response to merge the same headers again. Other
+ * responses (a native `Response`, a fetch body) first materialize `ctx.res`,
+ * so headers set with `ctx.header()` are merged into them.
  */
 export function finalizeResponse(
 	ctx: Context,
@@ -60,6 +71,7 @@ export function finalizeResponse(
 	}
 
 	if (includesContextHeaders) ctx.res = undefined
+	else materializeContextResponse(ctx)
 	ctx.res = response
 	const contextResponse = ctx.res
 	finalizable[FINALIZED_RESPONSE] = {

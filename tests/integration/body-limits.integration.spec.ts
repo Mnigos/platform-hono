@@ -1,5 +1,5 @@
 import { request } from 'node:http'
-import { HttpException } from '@nestjs/common'
+import { HttpException, type NestApplicationOptions } from '@nestjs/common'
 import { HonoAdapter } from '../../src'
 import { createMultipartLimitScanner } from '../../src/helpers/multipart-limits'
 import { getNestHonoRequest } from '../../src/helpers/request'
@@ -219,38 +219,34 @@ describe('body stream integration', () => {
 	})
 
 	test.each([
-		[{ fileSize: 1 }, 413, 'File too large'],
-		[{ files: 0 }, 400, 'Too many files'],
-	] as const)('rejects parsed FormData exceeding %o even when the scanner accepts it', async (limits, status, message) => {
-		// Each native parser accepts a header spelling the conservative scanner does not classify as a file.
-		const disposition =
-			typeof globalThis.Bun === 'undefined'
-				? ' Content-Disposition: form-data; name="f"; filename="x"'
-				: 'Content-Disposition: form-data; name="f"; filename="x"\n'
-		const body = `--x\r\n${disposition}\r\n\r\n1234567890\r\n--x--\r\n`
-		const contentType = 'multipart/form-data; boundary=x'
-		const scanner = createMultipartLimitScanner(contentType, limits)
-		expect(scanner).toBeDefined()
-		expect(() => scanner?.write(Buffer.from(body))).not.toThrow()
-		const parsed = await new Response(body, {
-			headers: { 'content-type': contentType },
-		}).formData()
-		expect(parsed.get('f')).toBeInstanceOf(Blob)
-		expect((parsed.get('f') as Blob).size).toBe(10)
-		const app = await startApp(new HonoAdapter({ multipartLimits: limits }))
-		try {
-			const response = await fetch(`${app.baseUrl}/echo`, {
-				body,
-				method: 'POST',
-				headers: { 'content-type': contentType },
-			})
-			expect(response.status).toBe(status)
-			await expect(response.json()).resolves.toMatchObject({
-				statusCode: status,
-				message,
-			})
-		} finally {
-			await app.close()
+		{ fileSize: 1 },
+		{ files: 0 },
+	] as const)('rejects part headers that only one runtime parser accepts with limits %o', async limits => {
+		for (const disposition of [
+			' Content-Disposition: form-data; name="f"; filename="x"',
+			'Content-Disposition: form-data; name="f"; filename="x"\n',
+		]) {
+			const body = `--x\r\n${disposition}\r\n\r\n1234567890\r\n--x--\r\n`
+			const contentType = 'multipart/form-data; boundary=x'
+			const scanner = createMultipartLimitScanner(contentType, limits)
+			expect(() => scanner?.write(Buffer.from(body))).toThrow(
+				'Malformed request body'
+			)
+			const app = await startApp(new HonoAdapter({ multipartLimits: limits }))
+			try {
+				const response = await fetch(`${app.baseUrl}/echo`, {
+					body,
+					method: 'POST',
+					headers: { 'content-type': contentType },
+				})
+				expect(response.status).toBe(400)
+				await expect(response.json()).resolves.toMatchObject({
+					statusCode: 400,
+					message: 'Malformed request body',
+				})
+			} finally {
+				await app.close()
+			}
 		}
 	})
 
@@ -545,6 +541,122 @@ describe('body stream integration', () => {
 			await expect(response.json()).resolves.toEqual({
 				size: Buffer.byteLength(body),
 			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	const parserDisabledConfigurations = [
+		[
+			'skipBodyParserFor',
+			{ skipBodyParserFor: ['/raw-upload'] as string[] },
+			{} as NestApplicationOptions,
+		],
+		[
+			'bodyParser: false',
+			{} as { skipBodyParserFor?: string[] },
+			{ bodyParser: false } as NestApplicationOptions,
+		],
+	] as const
+
+	test.each(
+		parserDisabledConfigurations.flatMap(
+			([label, adapterOptions, appOptions]) =>
+				[
+					[
+						'leading whitespace',
+						` Content-Disposition: form-data; name="file"; filename="a.txt"`,
+					],
+					[
+						'a trailing bare LF',
+						`Content-Disposition: form-data; name="file"; filename="a.txt"\n`,
+					],
+				].map(
+					([form, header]) =>
+						[label, form, header, adapterOptions, appOptions] as const
+				)
+		)
+	)('rejects multipart part headers with %s and %s without parsing', async (_label, _form, header, adapterOptions, appOptions) => {
+		const body =
+			`--${BOUNDARY}\r\n${header}\r\n\r\n${'x'.repeat(1000)}\r\n` +
+			`--${BOUNDARY}--\r\n`
+		const app = await startApp(
+			new HonoAdapter({
+				...adapterOptions,
+				multipartLimits: { fileSize: 1, files: 0 },
+			}),
+			appOptions
+		)
+		try {
+			const response = await fetch(`${app.baseUrl}/raw-upload`, {
+				body,
+				method: 'POST',
+				headers: { 'content-type': CONTENT_TYPE },
+			})
+			expect(response.status).toBe(400)
+			await expect(response.json()).resolves.toMatchObject({
+				message: 'Malformed request body',
+			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	test.each(
+		parserDisabledConfigurations
+	)('enforces multipart file limits with %s', async (_label, adapterOptions, appOptions) => {
+		for (const [limits, status] of [
+			[{ fileSize: 1 }, 413],
+			[{ files: 0 }, 400],
+		] as const) {
+			const app = await startApp(
+				new HonoAdapter({ ...adapterOptions, multipartLimits: limits }),
+				appOptions
+			)
+			try {
+				const response = await fetch(`${app.baseUrl}/raw-upload`, {
+					body: `${part('file', 'x'.repeat(1000), 'a.txt')}--${BOUNDARY}--\r\n`,
+					method: 'POST',
+					headers: { 'content-type': CONTENT_TYPE },
+				})
+				expect(response.status).toBe(status)
+			} finally {
+				await app.close()
+			}
+		}
+	})
+
+	test('counts a request body that middleware replaced after the server framed the original', async () => {
+		const adapter = new HonoAdapter({ bodyLimit: 4 })
+		adapter.hono.use(async (ctx, next) => {
+			const original = ctx.req.raw
+			ctx.req.raw = new Request(original.url, {
+				body: 'x'.repeat(1000),
+				headers: original.headers,
+				method: original.method,
+			})
+			await next()
+		})
+		const app = await startApp(adapter)
+		try {
+			const response = await new Promise<{ status?: number }>(
+				(resolve, reject) => {
+					const client = request(
+						`${app.baseUrl}/echo`,
+						{
+							headers: { 'content-length': '1', 'content-type': 'text/plain' },
+							method: 'POST',
+						},
+						incoming => {
+							incoming.resume()
+							incoming.on('end', () => resolve({ status: incoming.statusCode }))
+						}
+					)
+					client.on('error', reject)
+					client.end('x')
+				}
+			)
+			expect(response.status).toBe(413)
 		} finally {
 			await app.close()
 		}

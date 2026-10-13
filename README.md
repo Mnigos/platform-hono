@@ -205,6 +205,8 @@ Status codes match Nest's multer integration: a file over `fileSize` is
 rejected as payload-too-large (413, `File too large`), and too many files,
 fields, or parts as a bad request (400, `Too many files`, `Too many fields`,
 `Too many parts`). The body limits still apply to the whole multipart body.
+Part headers must be plain `Name: value` lines separated by CRLF; other
+forms, which Bun and Node.js parse differently, are rejected as a bad request.
 The parsed `FormData` is checked against the same limits as well. Where Bun's
 and Node.js's multipart parsers read a body differently, the streaming check
 counts the larger interpretation, and a `Content-Type` with more than one

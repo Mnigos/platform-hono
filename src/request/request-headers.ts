@@ -67,7 +67,9 @@ export function isTransportFramed(ctx: Context) {
  */
 export function mayHaveRequestBody(state: RequestState) {
 	const { incoming, method, rawRequest } = state
-	if (!(incoming || getBunServer(state.ctx))) return rawRequest.body !== null
+	const currentRequest = state.ctx.req.raw
+	if (currentRequest !== rawRequest || !(incoming || getBunServer(state.ctx)))
+		return currentRequest.body !== null
 	if (!incoming && (method === 'GET' || method === 'HEAD')) return false
 	if (
 		readRequestHeader(rawRequest, incoming, 'transfer-encoding') !== undefined
