@@ -35,6 +35,7 @@ export interface RequestState extends ContextTracking {
 	ctx: Context
 	currentRaw?: Request
 	headers?: Record<string, string>
+	headersSource?: Request
 	incoming?: NodeIncoming
 	ip?: string | null
 	method: string
@@ -80,7 +81,11 @@ const REQUEST_ACCESSORS = {
 		enumerable: true,
 		get(this: StateCarrier) {
 			const state = this[REQUEST_STATE]
-			state.headers ??= Object.fromEntries(state.rawRequest.headers)
+			const source = getCurrentRequest(state)
+			if (!state.headers || state.headersSource !== source) {
+				state.headers = Object.fromEntries(source.headers)
+				state.headersSource = source
+			}
 			return state.headers
 		},
 		set(this: StateCarrier, value: unknown) {
@@ -227,6 +232,16 @@ export function getUrlPathname(url: string) {
  * example to rewrite the URL. The original transport request stays in
  * `state.rawRequest` for runtime APIs such as Bun's `requestIP()`.
  */
+/**
+ * The request Nest-facing metadata describes: the replacement installed by
+ * middleware, or the server's request. The adapter's own unread copy of a
+ * parsed body has the same headers, so it is not materialized for this.
+ */
+function getCurrentRequest(state: RequestState) {
+	if (state.pendingRawRequest) return state.currentRaw ?? state.rawRequest
+	return state.ctx.req.raw
+}
+
 function adoptReplacedRequest(state: RequestState, rawRequest: Request) {
 	state.currentRaw = rawRequest
 	state.contentType = undefined

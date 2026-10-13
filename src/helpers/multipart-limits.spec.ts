@@ -317,6 +317,34 @@ describe('createMultipartLimitScanner', () => {
 	})
 })
 
+describe('multipart boundary parsing', () => {
+	test.each([
+		'multipart/form-data; boundary="\\x"',
+		'multipart/form-data; boundary="a\\"b"',
+		'multipart/form-data; boundary="a"b',
+		'multipart/form-data; boundary="unterminated',
+		'multipart/form-data; boundary=a\\b',
+		'multipart/form-data; boundary=a"b',
+	])('rejects the ambiguous boundary in %s', contentType => {
+		expect(() =>
+			createMultipartLimitScanner(contentType, { files: 0 })
+		).toThrow(new BadRequestException('Malformed request body'))
+	})
+
+	test.each([
+		['multipart/form-data; boundary="quoted value"', 'quoted value'],
+		['multipart/form-data; boundary="plain"; charset=utf-8', 'plain'],
+		['multipart/form-data; boundary=token', 'token'],
+	])('scans parts delimited by the boundary in %s', (contentType, boundary) => {
+		const scanner = createMultipartLimitScanner(contentType, { files: 0 })
+		const body = `--${boundary}\r\nContent-Disposition: form-data; name="f"; filename="a"\r\n\r\nx\r\n--${boundary}--\r\n`
+
+		expect(() => scanner?.write(new TextEncoder().encode(body))).toThrow(
+			new BadRequestException('Too many files')
+		)
+	})
+})
+
 describe('assertMultipartFormLimits', () => {
 	function createFormData() {
 		const formData = new FormData()

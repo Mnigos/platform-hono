@@ -26,6 +26,7 @@ export function createBodyLimitMiddleware({
 
 	return (ctx, next) => {
 		const state = getRequestState(ctx, adapterOptions)
+		syncRawRequest(state)
 		if (!mayHaveRequestBody(state)) return proceed(ctx, next)
 		const pendingLimit = enforceRequestBodyLimit(
 			ctx,

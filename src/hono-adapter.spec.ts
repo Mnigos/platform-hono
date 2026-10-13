@@ -505,6 +505,70 @@ describe('HonoAdapter', () => {
 		}
 	})
 
+	test('reads Nest request headers from a request replaced by earlier Hono middleware', async () => {
+		const adapter = new HonoAdapter()
+		adapter.hono.use(async (ctx, next) => {
+			const headers = new Headers(ctx.req.raw.headers)
+			headers.delete('authorization')
+			headers.set('x-replaced', 'yes')
+			ctx.req.raw = new Request(ctx.req.raw.url, {
+				headers,
+				method: ctx.req.raw.method,
+			})
+			await next()
+		})
+		adapter.initHttpServer({})
+		let captured: NestHonoRequest | undefined
+		adapter.get('/headers', (req, ctx) => {
+			captured = getNestHonoRequest(req)
+			adapter.reply(ctx, 'ok')
+		})
+
+		await adapter.hono.request('/headers', {
+			headers: { authorization: 'Bearer secret' },
+		})
+
+		expect(captured?.headers?.authorization).toBeUndefined()
+		expect(captured?.headers?.['x-replaced']).toBe('yes')
+		expect(
+			(captured as unknown as Context['req']).header('authorization')
+		).toBeUndefined()
+	})
+
+	test('selects request size limits by the path of a request rewritten by earlier middleware', async () => {
+		const adapter = new HonoAdapter({
+			requestSizeLimits: [{ maxBytes: 3, path: '/small' }],
+		})
+		adapter.hono.use(async (ctx, next) => {
+			const original = ctx.req.raw
+			ctx.req.raw = new Request(original.url.replace('/upload', '/small'), {
+				body: await original.arrayBuffer(),
+				headers: original.headers,
+				method: original.method,
+			})
+			await next()
+		})
+		adapter.initHttpServer({})
+		adapter.setErrorHandler((error, _req, ctx) => {
+			adapter.status(
+				ctx,
+				(error as { getStatus?: () => number }).getStatus?.() ?? 500
+			)
+			adapter.reply(ctx, { message: error.message })
+		})
+		adapter.post('/upload', (_req, ctx) => {
+			adapter.reply(ctx, 'accepted')
+		})
+
+		const response = await adapter.hono.request('/upload', {
+			body: '123456',
+			headers: { 'content-type': 'text/plain' },
+			method: 'POST',
+		})
+
+		expect(response.status).toBe(413)
+	})
+
 	test('preserves request IP values that were already set upstream', async () => {
 		const adapter = new HonoAdapter({ trustProxy: true })
 		let capturedRequest: NestHonoRequest | undefined
