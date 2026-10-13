@@ -12,7 +12,8 @@ const MAX_PART_HEADER_BYTES = 16 * 1024
 /**
  * Counts multipart parts while the body streams in and throws as soon as a
  * configured part, field, file, or file size limit is exceeded, before the
- * remaining body is read or `Request.formData()` buffers it.
+ * remaining body is read or `Request.formData()` buffers it. Status codes
+ * follow Nest's multer mapping: 413 for file size, 400 for count limits.
  */
 export class MultipartLimitScanner {
 	private carry: Buffer = Buffer.from('\r\n')
@@ -95,11 +96,11 @@ export class MultipartLimitScanner {
 
 		const { fields, files, parts } = this.limits
 		if (parts !== undefined && this.parts > parts)
-			throw new PayloadTooLargeException('Too many parts')
+			throw new BadRequestException('Too many parts')
 		if (files !== undefined && this.files > files)
-			throw new PayloadTooLargeException('Too many files')
+			throw new BadRequestException('Too many files')
 		if (fields !== undefined && this.fields > fields)
-			throw new PayloadTooLargeException('Too many fields')
+			throw new BadRequestException('Too many fields')
 	}
 }
 

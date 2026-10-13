@@ -92,7 +92,7 @@ describe('createMultipartLimitScanner', () => {
 	] as const)('rejects bodies over %o', async (limits, message) => {
 		for (const chunkSize of CHUNK_SIZES)
 			await expect(scanInChunks(ENTRIES, limits, chunkSize)).rejects.toThrow(
-				new PayloadTooLargeException(message)
+				new BadRequestException(message)
 			)
 	})
 

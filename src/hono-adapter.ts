@@ -1,134 +1,40 @@
-import { EventEmitter } from 'node:events'
-import type { OutgoingHttpHeaders } from 'node:http'
-import { PassThrough, Readable } from 'node:stream'
-import {
-	type ServeStaticOptions,
-	serveStatic,
-} from '@hono/node-server/serve-static'
 import { RESPONSE_ALREADY_SENT } from '@hono/node-server/utils/response'
 import {
 	HttpStatus,
 	Logger,
 	type NestApplicationOptions,
-	RequestMethod,
+	type RequestMethod,
 	type VersioningOptions,
 } from '@nestjs/common'
-import type { RequestHandler } from '@nestjs/common/interfaces'
-import type {
-	CorsOptions,
-	CorsOptionsDelegate,
-	CustomOrigin,
-} from '@nestjs/common/interfaces/external/cors-options.interface'
 import { AbstractHttpAdapter } from '@nestjs/core'
-import { type Context, Hono, type MiddlewareHandler } from 'hono'
-import { cors } from 'hono/cors'
+import { type Context, Hono } from 'hono'
 import {
 	createBodyLimit,
 	enforceRequestBodyLimit,
-	parseRequestBody,
+	parseBodyLimit,
 } from './helpers/body-parser'
-import { getBunServer } from './helpers/bun-server'
-import { extractClientIp } from './helpers/client-ip'
-import { getRequestSizeLimit, isPathMatch } from './helpers/path-matching'
-import { getNestHonoRequest } from './helpers/request'
+import { createCorsMiddleware, type NestCorsOptions } from './helpers/cors'
+import { getRequestSizeLimit } from './helpers/path-matching'
 import {
-	createResponse,
 	finalizeResponse,
 	getFinalizedResponse,
 	isJsonContentType,
-	onResponseFinalized,
 } from './helpers/response'
+import {
+	registerStaticAssets,
+	type StaticAssetsOptions,
+} from './helpers/static-assets'
 import type { HonoAdapterOptions } from './options'
+import { createParserMiddleware } from './request/body-parser-middleware'
+import {
+	getRequestState,
+	mayHaveRequestBody,
+	syncRawRequest,
+} from './request/request-state'
+import { type RouteArguments, RouteRegistry } from './routing/route-registry'
 import { createServer, type HonoHttpServer } from './server/create-server'
 
-type RouteHandler = (
-	req: Context['req'],
-	res: Context,
-	next: () => Promise<void>
-) => Response | undefined | Promise<Response | undefined>
-
-type RouteArguments = [
-	pathOrHandler: string | RouteHandler,
-	handler?: RouteHandler,
-]
-
-type HonoRouteMethod =
-	| 'all'
-	| 'copy'
-	| 'delete'
-	| 'get'
-	| 'head'
-	| 'lock'
-	| 'mkcol'
-	| 'move'
-	| 'options'
-	| 'patch'
-	| 'post'
-	| 'propfind'
-	| 'proppatch'
-	| 'put'
-	| 'search'
-	| 'unlock'
-	| 'use'
-
-type NestCorsOptions = Exclude<
-	NestApplicationOptions['cors'],
-	boolean | undefined
->
-type StaticOrigin = Exclude<CorsOptions['origin'], CustomOrigin>
 type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
-
-interface StaticAssetsOptions extends ServeStaticOptions {
-	prefix?: string
-}
-
-interface NodeRequestBindings {
-	incoming?: {
-		on: (event: string, listener: (...args: unknown[]) => void) => unknown
-		socket?: NodeSocketLike
-	}
-	outgoing?: NodeSocketLike
-}
-
-interface NodeSocketLike {
-	on: (event: string, listener: (...args: unknown[]) => void) => unknown
-	once: (event: string, listener: (...args: unknown[]) => void) => unknown
-	removeListener: (
-		event: string,
-		listener: (...args: unknown[]) => void
-	) => unknown
-	[key: PropertyKey]: unknown
-}
-
-interface RequestSocketBridge {
-	signalClose: () => void
-	socket: NodeSocketLike
-}
-
-interface RequestEventBridge {
-	on?: (event: string, listener: (...args: unknown[]) => void) => unknown
-	socket?: unknown
-}
-
-interface HonoSseContext extends Context {
-	getHeaders?: () => OutgoingHttpHeaders
-	raw?: HonoSseWritable
-	requestSocketBridge?: RequestSocketBridge
-	sseResponseReady?: Promise<Response>
-	sseStarted?: boolean
-}
-
-interface HonoSseWritable extends PassThrough {
-	flushHeaders: () => void
-	getHeaders: () => OutgoingHttpHeaders
-	setHeader: (name: string, value: number | string | string[]) => void
-	statusCode?: number
-	writeHead: (
-		statusCode: number,
-		reasonPhraseOrHeaders?: OutgoingHttpHeaders | string,
-		headers?: OutgoingHttpHeaders
-	) => HonoSseWritable
-}
 
 const DEFAULT_PARSER_TYPES = [
 	'urlencoded',
@@ -136,354 +42,6 @@ const DEFAULT_PARSER_TYPES = [
 	'text',
 	'multipart/form-data',
 ] as const
-const BODY_LIMIT_REGEX = /^\s*(\d*\.?\d+)\s*(b|kb|mb|gb|tb|pb)?\s*$/i
-const HONO_CONSTRAINT_MARKER_REGEX = /[\\[\]()+*?|^$]/
-const HONO_PARAMETER_SUFFIX_REGEX = /:[A-Za-z_$][\w$]*$/
-const HONO_WILDCARD_SUFFIX_REGEX = /:[A-Za-z_$][\w$]*\{(?:\.\*|\.\+)\}$/
-const OPTIONAL_GROUP_PARAMETER_REGEX = /(?:^|[/.-]):[A-Za-z_$][\w$]*/
-const TRAILING_SLASHES_REGEX = /\/+$/
-
-interface OptionalRouteGroup {
-	content: string
-	end: number
-	start: number
-}
-
-interface OptionalParameterSuffix {
-	name: string
-	suffix: string
-}
-
-function findClosingBrace(path: string, start: number) {
-	let depth = 0
-	let insideCharacterClass = false
-	for (let index = start; index < path.length; index += 1) {
-		const character = path[index]
-		if (character === '\\') {
-			index += 1
-			continue
-		}
-		if (character === '[') insideCharacterClass = true
-		else if (character === ']') insideCharacterClass = false
-		else if (!insideCharacterClass && character === '{') depth += 1
-		else if (!insideCharacterClass && character === '}') {
-			depth -= 1
-			if (depth === 0) return index
-		}
-	}
-}
-
-function findOptionalRouteGroup(path: string): OptionalRouteGroup | undefined {
-	for (let start = 0; start < path.length; start += 1) {
-		if (path[start] !== '{') continue
-		const end = findClosingBrace(path, start)
-		if (end === undefined) return
-		const content = path.slice(start + 1, end)
-		const followsHonoParameter = HONO_PARAMETER_SUFFIX_REGEX.test(
-			path.slice(0, start)
-		)
-		if (
-			!followsHonoParameter ||
-			OPTIONAL_GROUP_PARAMETER_REGEX.test(content) ||
-			!HONO_CONSTRAINT_MARKER_REGEX.test(content)
-		) {
-			return { content, end, start }
-		}
-		start = end
-	}
-}
-
-function getOptionalParameterSuffix(
-	path: string,
-	optionalGroup: OptionalRouteGroup
-): OptionalParameterSuffix | undefined {
-	const name = path
-		.slice(0, optionalGroup.start)
-		.match(HONO_PARAMETER_SUFFIX_REGEX)?.[0]
-		.slice(1)
-	const { content } = optionalGroup
-	if (
-		!(name && content) ||
-		content.includes('/') ||
-		OPTIONAL_GROUP_PARAMETER_REGEX.test(content) ||
-		HONO_CONSTRAINT_MARKER_REGEX.test(content)
-	)
-		return
-
-	return { name, suffix: content }
-}
-
-function getOptionalParameterSuffixes(path: string) {
-	const suffixes: OptionalParameterSuffix[] = []
-	let remainingPath = path
-	for (;;) {
-		const optionalGroup = findOptionalRouteGroup(remainingPath)
-		if (!optionalGroup) return suffixes
-		const suffix = getOptionalParameterSuffix(remainingPath, optionalGroup)
-		if (suffix) suffixes.push(suffix)
-		remainingPath = `${remainingPath.slice(0, optionalGroup.start)}${remainingPath.slice(optionalGroup.end + 1)}`
-	}
-}
-
-function normalizeHonoPaths(path: string): string[] {
-	const optionalGroup = findOptionalRouteGroup(path)
-	if (!optionalGroup) {
-		return [path.replace(/\/\*([A-Za-z_$][\w$]*)/g, '/:$1{.+}')]
-	}
-
-	const before = path.slice(0, optionalGroup.start)
-	const after = path.slice(optionalGroup.end + 1)
-	if (getOptionalParameterSuffix(path, optionalGroup)) {
-		return normalizeHonoPaths(`${before}${after}`)
-	}
-	return [
-		...normalizeHonoPaths(`${before}${optionalGroup.content}${after}`),
-		...normalizeHonoPaths(`${before}${after}`),
-	]
-}
-
-function normalizeHonoMiddlewarePath(path: string) {
-	if (path === '*') return path
-	if (path === '/') return '/*'
-	if (path.endsWith('/*') || HONO_WILDCARD_SUFFIX_REGEX.test(path)) return path
-
-	return `${path.replace(TRAILING_SLASHES_REGEX, '')}/*`
-}
-
-function getResponseHeaders(ctx: Context) {
-	const headers: OutgoingHttpHeaders = Object.fromEntries(ctx.res.headers)
-	const setCookies = (
-		ctx.res.headers as Headers & { getSetCookie?: () => string[] }
-	).getSetCookie?.()
-	if (setCookies?.length) headers['set-cookie'] = setCookies
-	return headers
-}
-
-function setResponseHeader(
-	ctx: Context,
-	name: string,
-	value: number | string | string[] | undefined
-) {
-	if (value === undefined) return
-	if (!Array.isArray(value)) {
-		ctx.res.headers.set(name, String(value))
-		return
-	}
-
-	ctx.res.headers.delete(name)
-	for (const item of value) ctx.res.headers.append(name, String(item))
-}
-
-function normalizeCorsList(value?: string | string[]) {
-	if (!value) return
-	return Array.isArray(value)
-		? value
-		: value
-				.split(',')
-				.map(item => item.trim())
-				.filter(Boolean)
-}
-
-function isAllowedOrigin(
-	requestOrigin: string,
-	allowedOrigin: boolean | string | RegExp | (string | RegExp)[]
-): boolean {
-	if (allowedOrigin === true) return true
-	if (!allowedOrigin) return false
-	if (Array.isArray(allowedOrigin)) {
-		return allowedOrigin.some(origin => isAllowedOrigin(requestOrigin, origin))
-	}
-	if (allowedOrigin instanceof RegExp) {
-		allowedOrigin.lastIndex = 0
-		return allowedOrigin.test(requestOrigin)
-	}
-	return allowedOrigin === requestOrigin
-}
-
-function normalizeCorsOrigin(origin: StaticOrigin | undefined) {
-	if (origin === undefined || origin === '*') return '*'
-	return (requestOrigin: string) =>
-		isAllowedOrigin(requestOrigin, origin) ? requestOrigin : undefined
-}
-
-function resolveCorsOrigin(
-	origin: CorsOptions['origin'],
-	requestOrigin: string | undefined
-) {
-	if (typeof origin !== 'function') return origin
-	const originCallback = origin as (
-		requestOrigin: string | undefined,
-		callback: Parameters<CustomOrigin>[1]
-	) => void
-	return new Promise<StaticOrigin | undefined>((resolve, reject) => {
-		originCallback(requestOrigin || undefined, (error, allowedOrigin) => {
-			if (error) reject(error)
-			else resolve(allowedOrigin ?? false)
-		})
-	})
-}
-
-function normalizeCorsOptions(options: CorsOptions, origin?: StaticOrigin) {
-	const allowHeaders = normalizeCorsList(options.allowedHeaders)
-	const allowMethods = normalizeCorsList(options.methods)
-	const exposeHeaders = normalizeCorsList(options.exposedHeaders)
-	return {
-		...(allowHeaders ? { allowHeaders } : {}),
-		...(allowMethods ? { allowMethods } : {}),
-		...(options.credentials === undefined
-			? {}
-			: { credentials: options.credentials }),
-		...(exposeHeaders ? { exposeHeaders } : {}),
-		...(options.maxAge === undefined ? {} : { maxAge: options.maxAge }),
-		origin: normalizeCorsOrigin(origin),
-	}
-}
-
-function resolveCorsOptions(
-	delegate: CorsOptionsDelegate<Context['req']>,
-	request: Context['req']
-) {
-	return new Promise<CorsOptions>((resolve, reject) => {
-		delegate(request, (error, options) => {
-			if (error) reject(error)
-			else resolve(options)
-		})
-	})
-}
-
-function normalizeStaticPrefix(prefix: string) {
-	const normalized = `/${prefix.replace(/^\/+|\/+$/g, '')}`
-	return normalized === '/' ? '' : normalized
-}
-
-function createStaticMiddleware(options: ServeStaticOptions) {
-	const middleware = serveStatic(options)
-	return async (ctx: Context, next: () => Promise<void>) => {
-		if (ctx.req.method === 'GET' || ctx.req.method === 'HEAD') {
-			let continued = false
-			const response = await middleware(ctx, async () => {
-				continued = true
-				await next()
-			})
-			if (continued || !(response instanceof Response)) return response
-
-			return finalizeResponse(ctx, createResponse(ctx, response))
-		}
-		return next()
-	}
-}
-
-function createRequestSocketBridge(socket: NodeSocketLike) {
-	const closeEvents = new EventEmitter()
-	let listening = false
-	let bridgedSocket: NodeSocketLike
-	const forwardClose = (...args: unknown[]) => {
-		listening = false
-		closeEvents.emit('close', ...args)
-	}
-	const listen = () => {
-		if (listening) return
-		listening = true
-		socket.once('close', forwardClose)
-	}
-	const stopListening = () => {
-		if (!listening) return
-		listening = false
-		socket.removeListener('close', forwardClose)
-	}
-	const addCloseListener = (
-		method: 'on' | 'once',
-		listener: (...args: unknown[]) => void
-	) => {
-		listen()
-		closeEvents[method]('close', listener)
-		return bridgedSocket
-	}
-	const removeCloseListener = (listener: (...args: unknown[]) => void) => {
-		closeEvents.removeListener('close', listener)
-		if (closeEvents.listenerCount('close') === 0) stopListening()
-		return bridgedSocket
-	}
-
-	bridgedSocket = new Proxy(socket, {
-		get(target, property) {
-			if (property === 'on' || property === 'addListener') {
-				return (event: string, listener: (...args: unknown[]) => void) => {
-					if (event === 'close') return addCloseListener('on', listener)
-					socket.on(event, listener)
-					return bridgedSocket
-				}
-			}
-			if (property === 'once') {
-				return (event: string, listener: (...args: unknown[]) => void) => {
-					if (event === 'close') return addCloseListener('once', listener)
-					socket.once(event, listener)
-					return bridgedSocket
-				}
-			}
-			if (property === 'off' || property === 'removeListener') {
-				return (event: string, listener: (...args: unknown[]) => void) => {
-					if (event === 'close') return removeCloseListener(listener)
-					socket.removeListener(event, listener)
-					return bridgedSocket
-				}
-			}
-
-			const socketValue = Reflect.get(target, property, target)
-			return typeof socketValue === 'function'
-				? socketValue.bind(target)
-				: socketValue
-		},
-		set(target, property, value) {
-			return Reflect.set(target, property, value, target)
-		},
-	})
-
-	return {
-		signalClose() {
-			stopListening()
-			closeEvents.emit('close')
-		},
-		socket: bridgedSocket,
-	}
-}
-
-function runHandlers(
-	ctx: Context,
-	handlers: MiddlewareHandler[],
-	next: () => Promise<void>
-) {
-	const dispatch = async (index: number): Promise<Response | undefined> => {
-		const handler = handlers[index]
-		if (!handler) {
-			await next()
-			return
-		}
-		return (
-			(await handler(ctx, async () => {
-				await dispatch(index + 1)
-			})) ?? undefined
-		)
-	}
-	return dispatch(0)
-}
-
-function parseBodyLimit(limit: number | string | undefined) {
-	if (typeof limit === 'number') return limit
-	if (limit === undefined) return
-	const match = limit.match(BODY_LIMIT_REGEX)
-	if (!match) throw new Error(`Invalid body parser limit: ${limit}`)
-	const multipliers = {
-		b: 1,
-		gb: 1024 ** 3,
-		kb: 1024,
-		mb: 1024 ** 2,
-		pb: 1024 ** 5,
-		tb: 1024 ** 4,
-	}
-	const unit = (match[2]?.toLowerCase() ?? 'b') as keyof typeof multipliers
-	return Math.floor(Number(match[1]) * multipliers[unit])
-}
 
 export class HonoAdapter extends AbstractHttpAdapter<
 	HonoHttpServer,
@@ -491,15 +49,16 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	Context
 > {
 	private readonly registeredParserTypes = new Set<string>()
+	private batchedParserTypes?: string[]
 	private readonly adapterOptions: HonoAdapterOptions
 	private readonly logger = new Logger('HonoAdapter')
 	private forceCloseConnections = false
-	private readonly headRouteHandlers = new Map<string, MiddlewareHandler[]>()
-	private readonly triedHeadRoutes = new WeakMap<Context, Set<string>>()
+	private readonly routes: RouteRegistry
 
 	constructor(options: HonoAdapterOptions = {}) {
 		super(new Hono())
 		this.adapterOptions = options
+		this.routes = new RouteRegistry(this.hono, options)
 	}
 
 	get hono() {
@@ -510,346 +69,72 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		return this.registeredParserTypes.size > 0
 	}
 
-	private getRouteAndHandler(
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	): [string, RouteHandler] {
-		const path = typeof pathOrHandler === 'function' ? '' : pathOrHandler
-		const routeHandler =
-			typeof pathOrHandler === 'function' ? pathOrHandler : handler
-		if (!routeHandler) throw new Error('Route handler is required')
-		return [path, routeHandler]
-	}
-
-	private createRouteHandler(
-		routeHandler: RequestHandler,
-		waitForNext = false,
-		optionalParameterSuffixes: OptionalParameterSuffix[] = []
-	): MiddlewareHandler {
-		return async (ctx, next) => {
-			const sseResponse = this.attachSseBridge(ctx)
-			this.normalizeRequestMetadata(ctx, optionalParameterSuffixes)
-			const handlerPromise = this.invokeHandler(
-				routeHandler,
-				ctx,
-				next,
-				waitForNext
-			)
-			const result = await Promise.race([
-				handlerPromise.then(response => ({
-					response,
-					type: 'handler' as const,
-				})),
-				sseResponse.then(response => ({ response, type: 'sse' as const })),
-			])
-			if (result.type === 'sse') {
-				handlerPromise.catch(error => {
-					const stream = (ctx as HonoSseContext).raw
-					stream?.destroy(error)
-				})
-				return this.finalizeRouteResponse(ctx, result.response)
-			}
-			return this.finalizeRouteResponse(
-				ctx,
-				result.response instanceof Response ? result.response : undefined
-			)
-		}
-	}
-
-	private async finalizeRouteResponse(ctx: Context, response?: Response) {
-		const finalized = getFinalizedResponse(ctx, response)
-		if (ctx.req.method !== 'HEAD' || !finalized.body) return finalized
-
-		const sseContext = ctx as HonoSseContext
-		if (sseContext.sseStarted) {
-			sseContext.requestSocketBridge?.signalClose()
-			if (sseContext.raw) {
-				await new Promise<void>(resolve => {
-					if (sseContext.raw?.closed) {
-						resolve()
-						return
-					}
-					sseContext.raw?.once('close', resolve)
-					sseContext.raw?.destroy()
-				})
-			}
-		} else await finalized.body.cancel().catch(() => undefined)
-		return finalizeResponse(
-			ctx,
-			new Response(null, {
-				headers: finalized.headers,
-				status: finalized.status,
-				statusText: finalized.statusText,
-			})
-		)
-	}
-
-	private async invokeHandler(
-		handler: RequestHandler | Function,
-		ctx: Context,
-		next: () => Promise<void>,
-		waitForNext = false
-	) {
-		let nextPromise: Promise<void> | undefined
-		let notifyNextCall: () => void = () => undefined
-		const nextCalled = new Promise<void>(resolve => {
-			notifyNextCall = resolve
-		})
-		const nestNext = (error?: unknown) => {
-			nextPromise ??=
-				error === undefined || error === null
-					? next()
-					: Promise.reject(
-							error instanceof Error ? error : new Error(String(error))
-						)
-			notifyNextCall()
-			return nextPromise
-		}
-		const response = await handler(ctx.req, ctx, nestNext)
-		if (
-			!nextPromise &&
-			waitForNext &&
-			!(response instanceof Response) &&
-			!ctx.finalized
-		) {
-			const removeFinalizeListener = onResponseFinalized(ctx, notifyNextCall)
-			await nextCalled
-			removeFinalizeListener()
-		}
-		if (nextPromise) await nextPromise
-		return response
-	}
-
-	private attachRequestBridge(ctx: Context) {
-		const req = getNestHonoRequest(ctx.req)
-		const rawRequest = ctx.req.raw as Request & RequestEventBridge
-		const { incoming, outgoing } =
-			(ctx.env as NodeRequestBindings | undefined) ?? {}
-		if (incoming?.socket) {
-			const sseContext = ctx as HonoSseContext
-			const requestSocketBridge =
-				sseContext.requestSocketBridge ??
-				createRequestSocketBridge(incoming.socket)
-			sseContext.requestSocketBridge = requestSocketBridge
-			if (!req.socket) req.socket = requestSocketBridge.socket
-			if (!rawRequest.socket) rawRequest.socket = requestSocketBridge.socket
-		}
-		const on = (event: string, listener: (...args: unknown[]) => void) => {
-			if (event !== 'close' && incoming) return incoming.on(event, listener)
-			if (event !== 'close') return req
-
-			const sseContext = ctx as HonoSseContext
-			const socket = sseContext.requestSocketBridge?.socket
-			const signal = ctx.req.raw.signal
-			const sseResponse = sseContext.raw
-			let called = false
-			const cleanup = () => {
-				signal.removeEventListener('abort', invokeListener)
-				socket?.removeListener('close', invokeListener)
-				sseResponse?.removeListener('close', invokeListener)
-				outgoing?.removeListener('close', invokeListener)
-			}
-			const invokeListener = (...args: unknown[]) => {
-				if (called) return
-				called = true
-				cleanup()
-				listener(...args)
-			}
-			if (signal.aborted) queueMicrotask(invokeListener)
-			else {
-				signal.addEventListener('abort', invokeListener, { once: true })
-				socket?.once('close', invokeListener)
-				sseResponse?.once('close', invokeListener)
-				outgoing?.once('close', invokeListener)
-			}
-			return req
-		}
-		req.on = on
-		rawRequest.on = on
-	}
-
-	private attachSseBridge(ctx: Context) {
-		const sseCtx = ctx as HonoSseContext
-		if (sseCtx.sseResponseReady) return sseCtx.sseResponseReady
-		let resolveResponse: (response: Response) => void = () => undefined
-		const responseReady = new Promise<Response>(resolve => {
-			resolveResponse = resolve
-		})
-		sseCtx.sseResponseReady = responseReady
-
-		const stream = new PassThrough() as HonoSseWritable
-		sseCtx.getHeaders = () => getResponseHeaders(ctx)
-		stream.getHeaders = () => getResponseHeaders(ctx)
-		stream.setHeader = (name, value) => {
-			setResponseHeader(ctx, name, value)
-		}
-		stream.flushHeaders = () => undefined
-		stream.writeHead = (statusCode, reasonPhraseOrHeaders, headers) => {
-			sseCtx.sseStarted = true
-			getBunServer(ctx)?.timeout(ctx.req.raw, 0)
-			const outgoingHeaders =
-				typeof reasonPhraseOrHeaders === 'string'
-					? headers
-					: reasonPhraseOrHeaders
-
-			stream.statusCode = statusCode
-			ctx.status(statusCode as Parameters<Context['status']>[0])
-
-			if (outgoingHeaders) {
-				for (const [name, value] of Object.entries(outgoingHeaders)) {
-					setResponseHeader(ctx, name, value)
-				}
-			}
-			if (!ctx.finalized) {
-				const response = ctx.body(
-					Readable.toWeb(stream) as ReadableStream<Uint8Array>
-				)
-				resolveResponse(finalizeResponse(ctx, response))
-			}
-
-			return stream
-		}
-		sseCtx.raw = stream
-		return responseReady
-	}
-
-	private registerRoute(
-		method: HonoRouteMethod,
-		pathOrHandler: string | RouteHandler,
-		handler?: RouteHandler
-	) {
-		const [routePath, routeHandler] = this.getRouteAndHandler(
-			pathOrHandler,
-			handler
-		)
-		const wrappedHandler = this.createRouteHandler(
-			routeHandler as RequestHandler,
-			method === 'use',
-			getOptionalParameterSuffixes(routePath)
-		)
-
-		if (method === 'use' && typeof pathOrHandler === 'function') {
-			this.hono.use(wrappedHandler)
-			return
-		}
-
-		const middlewareContexts = new WeakSet<Context>()
-		const middlewareHandler: MiddlewareHandler = (ctx, next) => {
-			if (middlewareContexts.has(ctx)) return next()
-			middlewareContexts.add(ctx)
-			return wrappedHandler(ctx, next)
-		}
-
-		for (const honoPath of new Set(normalizeHonoPaths(routePath))) {
-			if (method === 'all') {
-				this.hono.all(honoPath, wrappedHandler)
-				continue
-			}
-			if (method === 'use') {
-				this.hono.use(normalizeHonoMiddlewarePath(honoPath), middlewareHandler)
-				continue
-			}
-			if (method === 'head') {
-				const headHandlers = this.headRouteHandlers.get(honoPath) ?? []
-				headHandlers.push(wrappedHandler)
-				this.headRouteHandlers.set(honoPath, headHandlers)
-				this.hono.on('GET', honoPath, (ctx, next) =>
-					ctx.req.method === 'HEAD' && this.markHeadRouteTried(ctx, honoPath)
-						? runHandlers(ctx, headHandlers, next)
-						: next()
-				)
-				continue
-			}
-
-			const handlerForMethod: MiddlewareHandler =
-				method === 'get'
-					? (ctx, next) => {
-							const headHandlers = this.headRouteHandlers.get(honoPath)
-							return ctx.req.method === 'HEAD' &&
-								headHandlers &&
-								this.markHeadRouteTried(ctx, honoPath)
-								? runHandlers(ctx, [...headHandlers, wrappedHandler], next)
-								: wrappedHandler(ctx, next)
-						}
-					: wrappedHandler
-			this.hono.on(method.toUpperCase(), honoPath, handlerForMethod)
-		}
-	}
-
-	private markHeadRouteTried(ctx: Context, path: string) {
-		const triedPaths = this.triedHeadRoutes.get(ctx) ?? new Set<string>()
-		if (triedPaths.has(path)) return false
-		triedPaths.add(path)
-		this.triedHeadRoutes.set(ctx, triedPaths)
-		return true
-	}
-
 	override all(...args: RouteArguments) {
-		this.registerRoute('all', ...args)
+		this.routes.register('all', ...args)
 	}
 
 	override get(...args: RouteArguments) {
-		this.registerRoute('get', ...args)
+		this.routes.register('get', ...args)
 	}
 
 	override post(...args: RouteArguments) {
-		this.registerRoute('post', ...args)
+		this.routes.register('post', ...args)
 	}
 
 	override put(...args: RouteArguments) {
-		this.registerRoute('put', ...args)
+		this.routes.register('put', ...args)
 	}
 
 	override delete(...args: RouteArguments) {
-		this.registerRoute('delete', ...args)
+		this.routes.register('delete', ...args)
 	}
 
 	override use(...args: RouteArguments) {
-		this.registerRoute('use', ...args)
+		this.routes.register('use', ...args)
 	}
 
 	override patch(...args: RouteArguments) {
-		this.registerRoute('patch', ...args)
+		this.routes.register('patch', ...args)
 	}
 
 	override options(...args: RouteArguments) {
-		this.registerRoute('options', ...args)
+		this.routes.register('options', ...args)
 	}
 
 	override head(...args: RouteArguments) {
-		this.registerRoute('head', ...args)
+		this.routes.register('head', ...args)
 	}
 
 	override search(...args: RouteArguments) {
-		this.registerRoute('search', ...args)
+		this.routes.register('search', ...args)
 	}
 
 	override propfind(...args: RouteArguments) {
-		this.registerRoute('propfind', ...args)
+		this.routes.register('propfind', ...args)
 	}
 
 	override proppatch(...args: RouteArguments) {
-		this.registerRoute('proppatch', ...args)
+		this.routes.register('proppatch', ...args)
 	}
 
 	override mkcol(...args: RouteArguments) {
-		this.registerRoute('mkcol', ...args)
+		this.routes.register('mkcol', ...args)
 	}
 
 	override copy(...args: RouteArguments) {
-		this.registerRoute('copy', ...args)
+		this.routes.register('copy', ...args)
 	}
 
 	override move(...args: RouteArguments) {
-		this.registerRoute('move', ...args)
+		this.routes.register('move', ...args)
 	}
 
 	override lock(...args: RouteArguments) {
-		this.registerRoute('lock', ...args)
+		this.routes.register('lock', ...args)
 	}
 
 	override unlock(...args: RouteArguments) {
-		this.registerRoute('unlock', ...args)
+		this.routes.register('unlock', ...args)
 	}
 
 	reply(ctx: Context, body: unknown, statusCode?: number) {
@@ -860,13 +145,12 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			return
 		}
 
-		const responseContentType = this.getHeader(ctx, 'Content-Type')
 		const bodyRecord = body as Record<string, unknown> | undefined
 
 		if (
-			!isJsonContentType(responseContentType) &&
 			bodyRecord?.statusCode &&
-			(bodyRecord.statusCode as number) >= HttpStatus.BAD_REQUEST
+			(bodyRecord.statusCode as number) >= HttpStatus.BAD_REQUEST &&
+			!isJsonContentType(this.getHeader(ctx, 'Content-Type'))
 		) {
 			this.logger.warn(
 				"Content-Type doesn't match Reply body, you might need a custom ExceptionFilter for non-JSON responses"
@@ -879,8 +163,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	status(ctx: Context, statusCode: number) {
 		ctx.status(statusCode as Parameters<Context['status']>[0])
-		const sseResponse = (ctx as HonoSseContext).raw
-		if (sseResponse) sseResponse.statusCode = statusCode
+		const sseStream = getRequestState(ctx, this.adapterOptions).sse?.stream
+		if (sseStream) sseStream.statusCode = statusCode
 	}
 
 	end() {
@@ -922,29 +206,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	useStaticAssets(rootPath: string, options: StaticAssetsOptions = {}) {
 		this.logger.log('Registering static assets middleware')
-		const { prefix, ...staticOptions } = options
-		if (staticOptions.root !== undefined) {
-			this.hono.use(rootPath, createStaticMiddleware(staticOptions))
-			return
-		}
-
-		const staticPrefix = normalizeStaticPrefix(prefix ?? '')
-		const rewriteRequestPath = staticOptions.rewriteRequestPath
-		const middleware = createStaticMiddleware({
-			...staticOptions,
-			rewriteRequestPath: (requestPath, ctx) => {
-				const pathWithoutPrefix = staticPrefix
-					? requestPath.slice(staticPrefix.length) || '/'
-					: requestPath
-				return rewriteRequestPath
-					? rewriteRequestPath(pathWithoutPrefix, ctx)
-					: pathWithoutPrefix
-			},
-			root: rootPath,
-		})
-
-		if (staticPrefix) this.hono.use(`${staticPrefix}/*`, middleware)
-		else this.hono.use(middleware)
+		registerStaticAssets(this.hono, rootPath, options)
 	}
 
 	setViewEngine() {
@@ -986,40 +248,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	enableCors(options: NestCorsOptions = {}) {
-		this.hono.use(async (ctx, next) => {
-			const resolvedOptions =
-				typeof options === 'function'
-					? await resolveCorsOptions(options, ctx.req)
-					: options
-			const origin = await resolveCorsOrigin(
-				resolvedOptions.origin,
-				ctx.req.header('origin')
-			)
-			if (origin === false) {
-				await next()
-				return
-			}
-			const corsMiddleware = cors(normalizeCorsOptions(resolvedOptions, origin))
-
-			if (ctx.req.method === 'OPTIONS' && resolvedOptions.preflightContinue) {
-				await corsMiddleware(ctx, async () => undefined)
-				await next()
-				return
-			}
-
-			const response = await corsMiddleware(ctx, next)
-			if (
-				ctx.req.method === 'OPTIONS' &&
-				resolvedOptions.optionsSuccessStatus &&
-				response instanceof Response
-			) {
-				return new Response(null, {
-					headers: response.headers,
-					status: resolvedOptions.optionsSuccessStatus,
-				})
-			}
-			return response
-		})
+		this.hono.use(createCorsMiddleware(options))
 	}
 
 	useBodyParser(
@@ -1033,15 +262,16 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		this.logger.log(
 			`Registering body parser middleware for type: ${type}${configuredLimit === undefined ? '' : ` | bodyLimit: ${configuredLimit}`}`
 		)
-		const parse = async (ctx: Context, next: () => Promise<void>) => {
-			const pathname = new URL(ctx.req.url).pathname
-			const shouldSkip = (this.adapterOptions.skipBodyParserFor ?? []).some(
-				path => isPathMatch(pathname, path)
-			)
-			if (!shouldSkip) await parseRequestBody(ctx, rawBody, type)
-			this.normalizeRequestMetadata(ctx)
-			await next()
+		this.registeredParserTypes.add(type)
+		if (configuredLimit === undefined && this.batchedParserTypes) {
+			this.batchedParserTypes.push(type)
+			return
 		}
+		const parse = createParserMiddleware({
+			adapterOptions: this.adapterOptions,
+			parserTypes: [type],
+			rawBody,
+		})
 		const bodyLimit =
 			configuredLimit === undefined
 				? undefined
@@ -1049,7 +279,6 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		this.hono.use(
 			bodyLimit ? (ctx, next) => bodyLimit(ctx, () => parse(ctx, next)) : parse
 		)
-		this.registeredParserTypes.add(type)
 	}
 
 	close(): Promise<void> {
@@ -1061,51 +290,26 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		})
 	}
 
-	private normalizeRequestMetadata(
-		ctx: Context,
-		optionalParameterSuffixes: OptionalParameterSuffix[] = []
-	) {
-		const req = getNestHonoRequest(ctx.req)
-		this.attachRequestBridge(ctx)
-		const clientIp = extractClientIp(ctx, this.adapterOptions)
-		if (!req.ip && clientIp) req.ip = clientIp
-		if (!req.headers) req.headers = Object.fromEntries(ctx.req.raw.headers)
-		const params = ctx.req.param()
-		for (const { name, suffix } of optionalParameterSuffixes
-			.slice()
-			.reverse()) {
-			const value = params[name]
-			if (value && value.length > suffix.length && value.endsWith(suffix))
-				params[name] = value.slice(0, -suffix.length)
-		}
-		req.params = params
-		if (typeof req.query === 'function' || !req.query) {
-			const query: Record<string, string | string[]> = Object.create(null)
-			for (const [key, values] of Object.entries(ctx.req.queries()))
-				query[key] = values.length > 1 ? values : (values[0] ?? '')
-			req.query = query
-		}
-
-		const pathname = new URL(ctx.req.url).pathname
-		req.baseUrl = pathname
-
-		return pathname
-	}
-
 	initHttpServer(options: NestApplicationOptions) {
 		this.forceCloseConnections = options.forceCloseConnections ?? false
 
-		this.hono.use(async (ctx, next) => {
-			const pathname = this.normalizeRequestMetadata(ctx)
+		this.hono.use((ctx, next) => {
+			const state = getRequestState(ctx, this.adapterOptions)
+			if (!mayHaveRequestBody(state)) return next()
 			const requestSizeLimit = getRequestSizeLimit(
-				pathname,
+				state.pathname,
 				this.adapterOptions.requestSizeLimits
 			)
-
-			await enforceRequestBodyLimit(ctx, this.adapterOptions, requestSizeLimit)
-
-			this.normalizeRequestMetadata(ctx)
-			await next()
+			const pendingLimit = enforceRequestBodyLimit(
+				ctx,
+				this.adapterOptions,
+				requestSizeLimit
+			)
+			if (!pendingLimit) return next()
+			return pendingLimit.then(() => {
+				syncRawRequest(state)
+				return next()
+			})
 		})
 		if (options.bodyParser !== false)
 			this.registerParserMiddleware(undefined, options.rawBody)
@@ -1123,40 +327,27 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		)
 		if (missingTypes.length === 0) return
 		this.logger.log('Registering parser middleware')
-		for (const type of missingTypes) this.useBodyParser(type, rawBody ?? false)
+		const parserTypes: string[] = []
+		this.batchedParserTypes = parserTypes
+		try {
+			for (const type of missingTypes)
+				this.useBodyParser(type, rawBody ?? false)
+		} finally {
+			this.batchedParserTypes = undefined
+		}
+		if (parserTypes.length > 0)
+			this.hono.use(
+				createParserMiddleware({
+					adapterOptions: this.adapterOptions,
+					parserTypes,
+					rawBody: rawBody ?? false,
+				})
+			)
 	}
 
 	createMiddlewareFactory(requestMethod: RequestMethod) {
 		return Promise.resolve((path: string, callback: Function) => {
-			const isAllMethods =
-				requestMethod === RequestMethod.ALL || (requestMethod as number) === -1
-			const method = RequestMethod[requestMethod]
-			const optionalParameterSuffixes = getOptionalParameterSuffixes(path)
-			if (!(method || isAllMethods))
-				throw new Error(`Unsupported request method: ${requestMethod}`)
-
-			const invokedContexts = new WeakSet<Context>()
-			const middleware: MiddlewareHandler = async (ctx, next) => {
-				if (invokedContexts.has(ctx)) return next()
-				invokedContexts.add(ctx)
-				this.normalizeRequestMetadata(ctx, optionalParameterSuffixes)
-				const response = await this.invokeHandler(callback, ctx, next, true)
-				if (response instanceof Response) return response
-			}
-
-			for (const honoPath of new Set(normalizeHonoPaths(path))) {
-				if (isAllMethods) {
-					this.hono.all(honoPath, middleware)
-					continue
-				}
-				if (requestMethod === RequestMethod.HEAD) {
-					this.hono.on('GET', honoPath, (ctx, next) =>
-						ctx.req.method === 'HEAD' ? middleware(ctx, next) : next()
-					)
-					continue
-				}
-				this.hono.on(method, honoPath, middleware)
-			}
+			this.routes.registerMiddleware(requestMethod, path, callback)
 		})
 	}
 

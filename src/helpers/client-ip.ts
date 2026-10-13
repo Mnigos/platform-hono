@@ -15,9 +15,13 @@ const IPV4_WITH_PORT_REGEX = /^(.*):(\d+)$/
  * Returns the direct socket peer unless explicitly configured to trust a proxy
  * header. Direct client-supplied forwarding headers are ignored by default.
  */
-export function extractClientIp(ctx: Context, options: HonoAdapterOptions) {
+export function extractClientIp(
+	ctx: Context,
+	options: HonoAdapterOptions,
+	rawRequest: Request = ctx.req.raw
+) {
 	const trustProxy = options.trustProxy
-	const directClientIp = getDirectClientIp(ctx)
+	const directClientIp = getDirectClientIp(ctx, rawRequest)
 	if (!trustProxy) return directClientIp
 
 	const trustedHeaders =
@@ -40,18 +44,14 @@ export function extractClientIp(ctx: Context, options: HonoAdapterOptions) {
 	return directClientIp
 }
 
-function getDirectClientIp(ctx: Context) {
+function getDirectClientIp(ctx: Context, rawRequest: Request) {
 	try {
-		return normalizeIpAddress(getRemoteAddress(ctx))
+		const bunServer = getBunServer(ctx)
+		if (bunServer) return bunServer.requestIP(rawRequest)?.address || undefined
+		return getConnInfo(ctx).remote.address || undefined
 	} catch {
 		return
 	}
-}
-
-function getRemoteAddress(ctx: Context) {
-	const bunServer = getBunServer(ctx)
-	if (bunServer) return bunServer.requestIP(ctx.req.raw)?.address
-	return getConnInfo(ctx).remote.address
 }
 
 function parseClientIpHeader(
