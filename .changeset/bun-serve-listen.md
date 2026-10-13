@@ -15,3 +15,5 @@ Cut per-request overhead on both runtimes: request metadata is computed once per
 Fix an uncaught `ERR_INVALID_STATE` that crashed Node.js processes when a `HEAD` request was answered with a `StreamableFile` or a Node.js stream.
 
 Support NestJS 12 alongside NestJS 11: the `@nestjs/common` and `@nestjs/core` peer range is now `>=11.0.0 <13`. On NestJS 12 the adapter implements `@QueryMethod()` (HTTP `QUERY`) routes, the security hook behind `app.useSecurityHeaders()` and `app.enableCsrfProtection()`, `return503OnClosing`, and reports route-order sensitivity, so Nest keeps declaration-order route registration.
+
+Fix Hono routes mounted on the adapter's Hono instance (for example `@bull-board/hono` via `getInstance().route()`) failing with `c.req.query is not a function`. Nest now receives a request view whose `query` is the parsed object, while Hono's `ctx.req` keeps its `query()` method.

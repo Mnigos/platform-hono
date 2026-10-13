@@ -6,6 +6,7 @@ import type {
 } from '@nestjs/common/interfaces/external/cors-options.interface'
 import type { Context } from 'hono'
 import { cors } from 'hono/cors'
+import { getNestRequest } from '../request/nest-request'
 
 export type NestCorsOptions = Exclude<
 	NestApplicationOptions['cors'],
@@ -98,7 +99,7 @@ export function createCorsMiddleware(options: NestCorsOptions = {}) {
 	return async (ctx: Context, next: () => Promise<void>) => {
 		const resolvedOptions =
 			typeof options === 'function'
-				? await resolveCorsOptions(options, ctx.req)
+				? await resolveCorsOptions(options, getNestRequest(ctx.req))
 				: options
 		const origin = await resolveCorsOrigin(
 			resolvedOptions.origin,

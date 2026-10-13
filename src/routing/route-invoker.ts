@@ -6,6 +6,7 @@ import {
 	onResponseFinalized,
 } from '../helpers/response'
 import type { HonoAdapterOptions } from '../options'
+import { getNestRequest } from '../request/nest-request'
 import {
 	getRequestState,
 	type RequestState,
@@ -96,7 +97,9 @@ export function invokeHandler(
 		})
 	}
 	try {
-		return Promise.resolve(handler(ctx.req, ctx, nestNext)).then(settle)
+		return Promise.resolve(
+			handler(getNestRequest(ctx.req), ctx, nestNext)
+		).then(settle)
 	} catch (error) {
 		return Promise.reject(error)
 	}
