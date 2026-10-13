@@ -1,4 +1,5 @@
 const CONTENT_DISPOSITION_REGEX = /^content-disposition\s*:(.*)$/i
+const HEADER_LINE_REGEX = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+:[^\r\n]*$/
 
 interface DispositionParameter {
 	hasSpaceBeforeEquals: boolean
@@ -48,10 +49,14 @@ function getDispositionParameters(value: string) {
  * file and `filename*` as a field, undici treats both `filename` and
  * `filename*` as files. A part either parser may read as a file counts as a
  * file, and a part either parser may read as a field counts as a field.
+ * Returns `undefined` for header blocks that are not plain `Name: value`
+ * lines separated by CRLF (leading whitespace, folding, bare CR or LF), which
+ * the runtime parsers read differently.
  */
 export function classifyMultipartPart(headers: string) {
-	const dispositions = headers
-		.split('\r\n')
+	const lines = headers === '' ? [] : headers.split('\r\n')
+	if (!lines.every(line => HEADER_LINE_REGEX.test(line))) return
+	const dispositions = lines
 		.map(line => line.match(CONTENT_DISPOSITION_REGEX)?.[1])
 		.filter(value => value !== undefined)
 		.map(getDispositionParameters)

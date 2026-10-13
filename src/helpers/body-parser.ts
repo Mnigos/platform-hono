@@ -7,8 +7,11 @@ import {
 	type MultipartLimits,
 	type RequestSizeLimit,
 } from '../options'
-import { getRequestHeader, isTransportFramed } from '../request/request-headers'
-import { replaceRawRequest } from '../request/request-state'
+import {
+	getCurrentRequestHeader,
+	hasTrustedFraming,
+	replaceRawRequest,
+} from '../request/request-state'
 import {
 	assertMultipartFormLimits,
 	createMultipartLimitScanner,
@@ -27,7 +30,7 @@ export async function parseRequestBody(
 	ctx: Context,
 	rawBody: boolean,
 	parserType?: string,
-	contentType = getRequestHeader(ctx, 'content-type'),
+	contentType = getCurrentRequestHeader(ctx, 'content-type'),
 	multipartLimits?: MultipartLimits
 ) {
 	if (!shouldParseRequestBody(ctx, parserType, contentType)) return
@@ -68,7 +71,7 @@ export function enforceRequestBodyLimit(
 	const effectiveBodyLimit = getEffectiveBodyLimit(options, requestSizeLimit)
 	const multipartScanner = options.multipartLimits
 		? createMultipartLimitScanner(
-				getRequestHeader(ctx, 'content-type'),
+				getCurrentRequestHeader(ctx, 'content-type'),
 				options.multipartLimits
 			)
 		: undefined
@@ -250,7 +253,7 @@ function enforceRawBodyLimit(
 	errorMessage: string,
 	multipartScanner?: MultipartLimitScanner
 ) {
-	const contentLengthHeader = getRequestHeader(ctx, 'content-length')
+	const contentLengthHeader = getCurrentRequestHeader(ctx, 'content-length')
 	if (contentLengthHeader) {
 		const contentLength = Number.parseInt(contentLengthHeader, 10)
 		if (Number.isFinite(contentLength) && contentLength > maxBytes)
@@ -258,8 +261,8 @@ function enforceRawBodyLimit(
 		if (
 			Number.isFinite(contentLength) &&
 			!multipartScanner &&
-			getRequestHeader(ctx, 'transfer-encoding') === undefined &&
-			isTransportFramed(ctx)
+			getCurrentRequestHeader(ctx, 'transfer-encoding') === undefined &&
+			hasTrustedFraming(ctx)
 		)
 			return
 	}

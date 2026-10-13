@@ -442,6 +442,69 @@ describe('HonoAdapter', () => {
 		expect((await adapter.hono.request('/numeric/abc')).status).toBe(404)
 	})
 
+	test('keeps headers and cookies set by Hono middleware registered before Nest routes', async () => {
+		const adapter = new HonoAdapter()
+		adapter.hono.use(async (ctx, next) => {
+			ctx.header('x-pre-registered', 'yes')
+			ctx.header('set-cookie', 'session=abc; Path=/', { append: true })
+			await next()
+		})
+		adapter.initHttpServer({})
+		adapter.get('/json', (_req, ctx) => {
+			adapter.reply(ctx, { ok: true })
+		})
+		adapter.get('/text', (_req, ctx) => {
+			adapter.reply(ctx, 'plain')
+		})
+
+		for (const path of ['/json', '/text']) {
+			const response = await adapter.hono.request(path)
+
+			expect(response.headers.get('x-pre-registered')).toBe('yes')
+			expect(response.headers.getSetCookie()).toEqual(['session=abc; Path=/'])
+		}
+	})
+
+	test('merges context headers into native and streaming Response replies', async () => {
+		const adapter = new HonoAdapter() as HonoAdapter & {
+			registerSecurityHook(hook: Function): void
+		}
+		adapter.registerSecurityHook(
+			(
+				_request: unknown,
+				response: { setHeader(name: string, value: string): void }
+			) => {
+				response.setHeader('x-content-type-options', 'nosniff')
+				return
+			}
+		)
+		adapter.initHttpServer({})
+		adapter.get('/native', (_req, ctx) => {
+			adapter.reply(ctx, new Response('native'))
+		})
+		adapter.get('/stream', (_req, ctx) => {
+			adapter.reply(
+				ctx,
+				new ReadableStream({
+					start(controller) {
+						controller.enqueue(new TextEncoder().encode('streamed'))
+						controller.close()
+					},
+				})
+			)
+		})
+
+		for (const [path, body] of [
+			['/native', 'native'],
+			['/stream', 'streamed'],
+		] as const) {
+			const response = await adapter.hono.request(path)
+
+			expect(response.headers.get('x-content-type-options')).toBe('nosniff')
+			await expect(response.text()).resolves.toBe(body)
+		}
+	})
+
 	test('preserves request IP values that were already set upstream', async () => {
 		const adapter = new HonoAdapter({ trustProxy: true })
 		let capturedRequest: NestHonoRequest | undefined

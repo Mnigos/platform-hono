@@ -12,7 +12,13 @@ import {
 	getSseBridge,
 	type SseBridge,
 } from '../response/sse-bridge'
-import { getNodeBindings, type NodeIncoming } from './request-headers'
+import {
+	getNodeBindings,
+	getRequestHeader,
+	isTransportFramed,
+	type NodeIncoming,
+	readRequestHeader,
+} from './request-headers'
 import {
 	createRequestSocketBridge,
 	type RequestSocketBridge,
@@ -296,4 +302,46 @@ export function shouldSkipBodyParser(state: RequestState) {
 		isPathMatch(state.pathname, path)
 	)
 	return state.skipBodyParser
+}
+
+function getExistingState(ctx: Context) {
+	return (
+		getNestHonoRequest(ctx.req) as NestHonoRequest & Partial<StateCarrier>
+	)[REQUEST_STATE]
+}
+
+/**
+ * Whether `ctx.req.raw` is still the request the server received. Requests
+ * replaced by middleware (or created by the adapter after parsing) were never
+ * framed by the runtime, so their bodies must be counted.
+ */
+function isOriginalRequest(state: RequestState) {
+	return !state.pendingRawRequest && state.ctx.req.raw === state.rawRequest
+}
+
+/**
+ * Reads a header of the current request: from Node's parsed headers while the
+ * original request is in place, from the replacement request otherwise.
+ */
+export function getCurrentRequestHeader(ctx: Context, name: string) {
+	const state = getExistingState(ctx)
+	if (!state) return getRequestHeader(ctx, name)
+	if (isOriginalRequest(state))
+		return readRequestHeader(state.rawRequest, state.incoming, name)
+	const request = state.pendingRawRequest
+		? (state.currentRaw ?? state.rawRequest)
+		: ctx.req.raw
+	return request.headers.get(name) ?? undefined
+}
+
+/**
+ * Whether the request body is framed by the server (`Content-Length` can be
+ * trusted): the transport request is unchanged and came through
+ * `@hono/node-server` or `Bun.serve`.
+ */
+export function hasTrustedFraming(ctx: Context) {
+	const state = getExistingState(ctx)
+	return (
+		state !== undefined && isOriginalRequest(state) && isTransportFramed(ctx)
+	)
 }

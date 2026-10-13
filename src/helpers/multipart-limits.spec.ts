@@ -1,6 +1,9 @@
 import { BadRequestException, PayloadTooLargeException } from '@nestjs/common'
 import type { MultipartLimits } from '../options'
-import { createMultipartLimitScanner } from './multipart-limits'
+import {
+	assertMultipartFormLimits,
+	createMultipartLimitScanner,
+} from './multipart-limits'
 
 interface MultipartEntry {
 	content: string
@@ -310,6 +313,40 @@ describe('createMultipartLimitScanner', () => {
 		scanner?.write(new TextEncoder().encode('--edge\r\n'))
 		expect(() => scanner?.write(new Uint8Array(17 * 1024).fill(65))).toThrow(
 			new BadRequestException('Malformed request body')
+		)
+	})
+})
+
+describe('assertMultipartFormLimits', () => {
+	function createFormData() {
+		const formData = new FormData()
+		formData.append('field', 'value')
+		formData.append('upload', new Blob(['0123456789']), 'a.txt')
+		return formData
+	}
+
+	test('accepts parsed form data within the limits and without limits', () => {
+		expect(() =>
+			assertMultipartFormLimits(createFormData(), {
+				fields: 1,
+				fileSize: 10,
+				files: 1,
+				parts: 2,
+			})
+		).not.toThrow()
+		expect(() =>
+			assertMultipartFormLimits(createFormData(), undefined)
+		).not.toThrow()
+	})
+
+	test.each([
+		[{ fileSize: 9 }, PayloadTooLargeException, 'File too large'],
+		[{ files: 0 }, BadRequestException, 'Too many files'],
+		[{ fields: 0 }, BadRequestException, 'Too many fields'],
+		[{ parts: 1 }, BadRequestException, 'Too many parts'],
+	] as const)('rejects parsed form data over %o', (limits, exception, message) => {
+		expect(() => assertMultipartFormLimits(createFormData(), limits)).toThrow(
+			new exception(message)
 		)
 	})
 })

@@ -138,7 +138,9 @@ export class MultipartLimitScanner {
 	}
 
 	private startPart(headers: string) {
-		const { possiblyFile, possiblyField } = classifyMultipartPart(headers)
+		const classification = classifyMultipartPart(headers)
+		if (!classification) throw new BadRequestException('Malformed request body')
+		const { possiblyFile, possiblyField } = classification
 		this.isFile = possiblyFile
 		this.partSize = 0
 		this.parts += 1
@@ -172,17 +174,21 @@ export function assertMultipartCounts(
 		throw new BadRequestException('Too many fields')
 }
 
+interface FormDataEntries {
+	entries(): Iterable<[string, unknown]>
+}
+
 /**
  * Checks multipart limits against the parsed `FormData`, so the limits hold
  * for the runtime parser's own interpretation of the body as well.
  */
 export function assertMultipartFormLimits(
-	formData: Iterable<[string, unknown]>,
+	formData: FormDataEntries,
 	limits: MultipartLimits | undefined
 ) {
 	if (!hasMultipartLimits(limits)) return
 	const counts: MultipartCounts = { fields: 0, files: 0, parts: 0 }
-	for (const [, value] of formData) {
+	for (const [, value] of formData.entries()) {
 		counts.parts += 1
 		if (typeof value === 'string') {
 			counts.fields += 1
