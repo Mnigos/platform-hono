@@ -1,5 +1,5 @@
 import { RequestMethod } from '@nestjs/common'
-import type { RequestHandler } from '@nestjs/common/interfaces'
+import type { RequestHandler } from '@nestjs/common/interfaces/http/http-server.interface'
 import type { Context, Hono, MiddlewareHandler } from 'hono'
 import type { HonoAdapterOptions } from '../options'
 import {
@@ -40,6 +40,7 @@ export type HonoRouteMethod =
 	| 'propfind'
 	| 'proppatch'
 	| 'put'
+	| 'query'
 	| 'search'
 	| 'unlock'
 	| 'use'

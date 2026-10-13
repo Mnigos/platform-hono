@@ -27,6 +27,45 @@ function requestPath(baseUrl: string, path: string) {
 }
 
 describe('reply helpers over HTTP', () => {
+	test('returns a circular object as HTML under an explicit Content-Type', async () => {
+		const app = await startApp()
+		try {
+			const response = await fetch(`${app.baseUrl}/returns/circular-html`)
+			expect(response.status).toBe(200)
+			expect(response.headers.get('content-type')?.split(';')[0]).toBe(
+				'text/html'
+			)
+			await expect(response.text()).resolves.toBe('<p>circular object</p>')
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('surfaces circular JSON serialization as a 500 without an explicit Content-Type', async () => {
+		const app = await startApp()
+		try {
+			const response = await fetch(`${app.baseUrl}/returns/circular-json`)
+			expect(response.status).toBe(500)
+			await expect(response.json()).resolves.toMatchObject({ statusCode: 500 })
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('serializes a null return as application/json null', async () => {
+		const app = await startApp()
+		try {
+			const response = await fetch(`${app.baseUrl}/returns/null`)
+			expect(response.status).toBe(200)
+			expect(response.headers.get('content-type')?.split(';')[0]).toBe(
+				'application/json'
+			)
+			await expect(response.text()).resolves.toBe('null')
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('preserves native globals across awaited handlers, concurrent replies and serialization errors on Node', async () => {
 		const nativeResponse = globalThis.Response
 		const nativeRequest = globalThis.Request
