@@ -1,5 +1,7 @@
 import { request } from 'node:http'
+import { HttpException } from '@nestjs/common'
 import { HonoAdapter } from '../../src'
+import { createMultipartLimitScanner } from '../../src/helpers/multipart-limits'
 import { getNestHonoRequest } from '../../src/helpers/request'
 import { startApp } from './fixtures/minimal-nest-app'
 
@@ -61,6 +63,271 @@ async function postNeverEnding(url: string, chunk: string) {
 }
 
 describe('body stream integration', () => {
+	test.each([
+		['request', undefined],
+		['request', '0'],
+		['request', '1'],
+		['fetch', undefined],
+		['fetch', '0'],
+		['fetch', '1'],
+	] as const)('rejects an unframed six-byte body through %s with Content-Length %s', async (method, contentLength) => {
+		const adapter = new HonoAdapter({ bodyLimit: 3 })
+		adapter.registerParserMiddleware('', false)
+		adapter.setErrorHandler((error, _req, ctx) => {
+			if (!(error instanceof HttpException)) throw error
+			adapter.reply(ctx, error.getResponse(), error.getStatus())
+		})
+		adapter.post('/direct', (req, ctx) =>
+			ctx.json({ body: getNestHonoRequest(req).body })
+		)
+		const headers = new Headers({ 'content-type': 'text/plain' })
+		if (contentLength !== undefined)
+			headers.set('content-length', contentLength)
+		const request = new Request('http://localhost/direct', {
+			body: '123456',
+			headers,
+			method: 'POST',
+		})
+		const response = await adapter.getInstance()[method](request)
+		expect(response.status).toBe(413)
+		await expect(response.json()).resolves.toMatchObject({ statusCode: 413 })
+	})
+
+	test('delivers a correctly framed body to the handler before the client finishes sending', async () => {
+		const adapter = new HonoAdapter({
+			bodyLimit: 6,
+			skipBodyParserFor: ['/stream-prefix'],
+		})
+		let observePrefix: (bytes: number[]) => void = () => undefined
+		const prefix = new Promise<number[]>(resolve => {
+			observePrefix = resolve
+		})
+		const app = await startApp(adapter, {}, () => {
+			adapter.post('/stream-prefix', async (req, ctx) => {
+				const bytes: number[] = []
+				const reader = req.raw.body?.getReader()
+				if (!reader) throw new Error('Expected a request body')
+				for (;;) {
+					const { done, value } = await reader.read()
+					if (done) break
+					bytes.push(...value)
+					if (bytes.length === 3) observePrefix([...bytes])
+				}
+				return ctx.json({ bytes })
+			})
+		})
+		const client = request(`${app.baseUrl}/stream-prefix`, {
+			method: 'POST',
+			headers: { 'content-type': 'text/plain', 'content-length': '6' },
+		})
+		const response = new Promise<{ status?: number; body: string }>(
+			(resolve, reject) => {
+				client.on('error', reject)
+				client.on('response', incoming => {
+					const chunks: Buffer[] = []
+					incoming.on('data', chunk => chunks.push(Buffer.from(chunk)))
+					incoming.on('error', reject)
+					incoming.on('end', () =>
+						resolve({
+							status: incoming.statusCode,
+							body: Buffer.concat(chunks).toString(),
+						})
+					)
+				})
+			}
+		)
+		let timer: ReturnType<typeof setTimeout> | undefined
+		try {
+			client.write('abc')
+			await expect(
+				Promise.race([
+					prefix,
+					new Promise<never>((_resolve, reject) => {
+						timer = setTimeout(
+							() =>
+								reject(
+									new Error(
+										'Handler did not receive the prefix before the body ended'
+									)
+								),
+							2000
+						)
+					}),
+				])
+			).resolves.toEqual([...Buffer.from('abc')])
+			client.end('def')
+			const result = await response
+			expect(result.status).toBe(200)
+			expect(JSON.parse(result.body)).toEqual({
+				bytes: [...Buffer.from('abcdef')],
+			})
+		} finally {
+			clearTimeout(timer)
+			client.destroy()
+			await response.catch(() => undefined)
+			await app.close()
+		}
+	})
+
+	test.each([
+		'multipart/form-data; xboundary=decoy; boundary=real',
+		'multipart/form-data; boundary=decoy; boundary=real',
+	])('rejects ambiguous multipart boundaries over HTTP: %s', async contentType => {
+		const app = await startApp(
+			new HonoAdapter({ multipartLimits: { fileSize: 1 } })
+		)
+		try {
+			const response = await fetch(`${app.baseUrl}/echo`, {
+				method: 'POST',
+				headers: { 'content-type': contentType },
+				body: `--real\r\nContent-Disposition: form-data; name="f"; filename="x"\r\n\r\n${'x'.repeat(2000)}\r\n--real--\r\n`,
+			})
+			expect(response.status).toBe(400)
+			await expect(response.json()).resolves.toMatchObject({
+				message: 'Malformed request body',
+			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	test.each([
+		'real',
+		'"real"',
+	])('uses boundary %s for parsing and file-size limits over HTTP', async boundary => {
+		const app = await startApp(
+			new HonoAdapter({ multipartLimits: { fileSize: 1 } })
+		)
+		try {
+			for (const size of [1, 2000]) {
+				const response = await fetch(`${app.baseUrl}/echo`, {
+					method: 'POST',
+					headers: {
+						'content-type': `multipart/form-data; boundary=${boundary}`,
+					},
+					body: `--real\r\nContent-Disposition: form-data; name="f"; filename="x"\r\n\r\n${'x'.repeat(size)}\r\n--real--\r\n`,
+				})
+				expect(response.status).toBe(size === 1 ? 201 : 413)
+				if (size > 1)
+					await expect(response.json()).resolves.toMatchObject({
+						message: 'File too large',
+					})
+				else await response.arrayBuffer()
+			}
+		} finally {
+			await app.close()
+		}
+	})
+
+	test.each([
+		[{ fileSize: 1 }, 413, 'File too large'],
+		[{ files: 0 }, 400, 'Too many files'],
+	] as const)('rejects parsed FormData exceeding %o even when the scanner accepts it', async (limits, status, message) => {
+		// Each native parser accepts a header spelling the conservative scanner does not classify as a file.
+		const disposition =
+			typeof Bun === 'undefined'
+				? ' Content-Disposition: form-data; name="f"; filename="x"'
+				: 'Content-Disposition: form-data; name="f"; filename="x"\n'
+		const body = `--x\r\n${disposition}\r\n\r\n1234567890\r\n--x--\r\n`
+		const contentType = 'multipart/form-data; boundary=x'
+		const scanner = createMultipartLimitScanner(contentType, limits)
+		expect(scanner).toBeDefined()
+		expect(() => scanner?.write(Buffer.from(body))).not.toThrow()
+		const parsed = await new Response(body, {
+			headers: { 'content-type': contentType },
+		}).formData()
+		expect(parsed.get('f')).toBeInstanceOf(Blob)
+		expect((parsed.get('f') as Blob).size).toBe(10)
+		const app = await startApp(new HonoAdapter({ multipartLimits: limits }))
+		try {
+			const response = await fetch(`${app.baseUrl}/echo`, {
+				body,
+				method: 'POST',
+				headers: { 'content-type': contentType },
+			})
+			expect(response.status).toBe(status)
+			await expect(response.json()).resolves.toMatchObject({
+				statusCode: status,
+				message,
+			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	test.each([
+		'application/json',
+		'text/plain',
+	])('preserves BOM and invalid UTF-8 bytes on a skipped %s route with rawBody disabled', async contentType => {
+		const bytes = [0xef, 0xbb, 0xbf, 0x61, 0xff]
+		const app = await startApp(
+			new HonoAdapter({ skipBodyParserFor: ['/echo/bytes'] }),
+			{ rawBody: false }
+		)
+		try {
+			const response = await fetch(`${app.baseUrl}/echo/bytes`, {
+				body: new Uint8Array(bytes),
+				method: 'POST',
+				headers: { 'content-type': contentType },
+			})
+			expect(response.status).toBe(201)
+			await expect(response.json()).resolves.toEqual({ bytes, rawBody: false })
+		} finally {
+			await app.close()
+		}
+	})
+
+	test.each([
+		'application/json',
+		'text/plain',
+	])('delivers exact %s bytes to a custom parser with rawBody disabled', async contentType => {
+		const bytes = [0xef, 0xbb, 0xbf, 0x61, 0xff]
+		const adapter = new HonoAdapter({ skipBodyParserFor: ['/echo/bytes'] })
+		const app = await startApp(adapter, { rawBody: false }, () => {
+			adapter.use(async (req, _ctx, next) => {
+				getNestHonoRequest(req).body = [
+					...new Uint8Array(await req.raw.clone().arrayBuffer()),
+				]
+				await next()
+			})
+		})
+		try {
+			const response = await fetch(`${app.baseUrl}/echo/bytes`, {
+				body: new Uint8Array(bytes),
+				method: 'POST',
+				headers: { 'content-type': contentType },
+			})
+			expect(response.status).toBe(201)
+			await expect(response.json()).resolves.toEqual({
+				body: bytes,
+				bytes,
+				rawBody: false,
+			})
+		} finally {
+			await app.close()
+		}
+	})
+
+	test('decodes a text BOM for Body while preserving invalid UTF-8 bytes for the Req reader', async () => {
+		const bytes = [0xef, 0xbb, 0xbf, 0x61, 0xff]
+		const app = await startApp(new HonoAdapter(), { rawBody: false })
+		try {
+			const response = await fetch(`${app.baseUrl}/echo/bytes`, {
+				body: new Uint8Array(bytes),
+				method: 'POST',
+				headers: { 'content-type': 'text/plain' },
+			})
+			expect(response.status).toBe(201)
+			await expect(response.json()).resolves.toEqual({
+				body: 'a\ufffd',
+				bytes,
+				rawBody: false,
+			})
+		} finally {
+			await app.close()
+		}
+	})
+
 	test.each([
 		'/echo',
 		'/raw-upload',

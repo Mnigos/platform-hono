@@ -14,7 +14,9 @@ bun add @mnigos/platform-hono hono @hono/node-server @nestjs/common @nestjs/core
 ```
 
 `@nestjs/common`, `@nestjs/core`, `hono`, and `@hono/node-server` are peer
-dependencies.
+dependencies. NestJS 11 and 12 are supported. On NestJS 12 the adapter also
+supports `@QueryMethod()` routes, `app.useSecurityHeaders()`,
+`app.enableCsrfProtection()`, and the `return503OnClosing` option.
 
 This package is ESM-only. CommonJS `require()` is not supported.
 

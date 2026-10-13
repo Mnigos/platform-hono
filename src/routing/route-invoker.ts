@@ -1,4 +1,4 @@
-import type { RequestHandler } from '@nestjs/common/interfaces'
+import type { RequestHandler } from '@nestjs/common/interfaces/http/http-server.interface'
 import type { Context, MiddlewareHandler } from 'hono'
 import {
 	finalizeResponse,

@@ -101,3 +101,30 @@ jobs:
 
       - name: Integration tests (Bun runtime)
         run: bun run test:integration:bun
+
+  nest-12:
+    name: Nest 12
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup
+        uses: ./.github/actions/setup
+
+      - name: Install Nest 12
+        run: bun add --dev @nestjs/common@12 @nestjs/core@12
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Unit tests
+        run: bun run test
+
+      - name: Integration tests
+        run: bun run test:integration
+
+      - name: Integration tests (Bun runtime)
+        run: bun run test:integration:bun

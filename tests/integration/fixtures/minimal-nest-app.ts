@@ -1,6 +1,7 @@
 import 'reflect-metadata'
 import type { Server } from 'node:http'
 import { Readable } from 'node:stream'
+import type { NestApplicationOptions } from '@nestjs/common'
 import {
 	type ArgumentsHost,
 	BadRequestException,
@@ -38,7 +39,6 @@ import {
 	UseGuards,
 	Version,
 } from '@nestjs/common'
-import type { NestApplicationOptions } from '@nestjs/common/interfaces'
 import { NestFactory } from '@nestjs/core'
 import type { Context } from 'hono'
 import { Observable } from 'rxjs'
@@ -232,6 +232,15 @@ class TestController {
 		}
 	}
 
+	@Post('/echo/bytes')
+	async echoBytes(@Body() body: unknown, @Req() req: CapturedRequest) {
+		return {
+			body,
+			bytes: req.raw ? [...new Uint8Array(await req.raw.arrayBuffer())] : [],
+			rawBody: req.rawBody !== undefined,
+		}
+	}
+
 	@Put('/echo')
 	putEcho(@Body() body: unknown) {
 		return { body, method: 'PUT' }
@@ -328,6 +337,23 @@ class TestController {
 	@Get('/returns/array')
 	returnArray() {
 		return ['one', 'two']
+	}
+
+	@Get('/returns/null')
+	returnNull() {
+		return null
+	}
+
+	@Get('/returns/circular-html')
+	@Header('Content-Type', 'text/html')
+	returnCircularHtml() {
+		return this.returnCircularJson()
+	}
+
+	@Get('/returns/circular-json')
+	returnCircularJson() {
+		const body = { toString: () => '<p>circular object</p>' }
+		return Object.assign(body, { self: body })
 	}
 
 	@Get('/returns/string')
@@ -427,6 +453,12 @@ class TestController {
 	@Sse('/events')
 	@Header('x-sse-test', 'yes')
 	events() {
+		return createSseEvents()
+	}
+
+	@Sse('/events/accepted')
+	@HttpCode(202)
+	acceptedEvents() {
 		return createSseEvents()
 	}
 

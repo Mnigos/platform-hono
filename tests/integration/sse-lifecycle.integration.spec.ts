@@ -13,6 +13,30 @@ interface CloseRequest {
 }
 
 describe('SSE lifecycle integration', () => {
+	test.each([
+		['/events/accepted', 'GET', 202],
+		['/events/accepted', 'HEAD', 202],
+		['/events', 'GET', 200],
+		['/events', 'HEAD', 200],
+	] as const)('preserves the SSE status for %s on %s', async (path, method, status) => {
+		const app = await startApp()
+		try {
+			const response = await fetch(`${app.baseUrl}${path}`, { method })
+			expect(response.status).toBe(status)
+			if (method === 'HEAD') await expect(response.text()).resolves.toBe('')
+			else {
+				expect(response.headers.get('content-type')).toContain(
+					'text/event-stream'
+				)
+				const body = await response.text()
+				expect(body).toContain('data: {"hello":"one"}')
+				expect(body).toContain('data: two')
+			}
+		} finally {
+			await app.close()
+		}
+	})
+
 	test('fires each close listener once on client abort, including listeners registered later', async () => {
 		const adapter = new HonoAdapter()
 		const firstClose = vi.fn()

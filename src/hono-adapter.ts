@@ -14,6 +14,12 @@ import {
 	parseBodyLimit,
 } from './helpers/body-parser'
 import { createCorsMiddleware, type NestCorsOptions } from './helpers/cors'
+import {
+	createSecurityHookMiddleware,
+	createShutdownMiddleware,
+	type Nest12ApplicationOptions,
+	type SecurityRequestHook,
+} from './helpers/nest-12'
 import { getRequestSizeLimit } from './helpers/path-matching'
 import {
 	finalizeResponse,
@@ -54,6 +60,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	private readonly adapterOptions: HonoAdapterOptions
 	private readonly logger = new Logger('HonoAdapter')
 	private forceCloseConnections = false
+	private isShuttingDown = false
 	private readonly routes: RouteRegistry
 
 	constructor(options: HonoAdapterOptions = {}) {
@@ -286,6 +293,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	close(): Promise<void> {
+		this.isShuttingDown = true
 		return new Promise(resolve => {
 			this.httpServer.close(() => resolve())
 			if ('closeIdleConnections' in this.httpServer)
@@ -296,6 +304,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	initHttpServer(options: NestApplicationOptions) {
 		this.forceCloseConnections = options.forceCloseConnections ?? false
+		if ((options as Nest12ApplicationOptions).return503OnClosing)
+			this.hono.use(createShutdownMiddleware(() => this.isShuttingDown))
 
 		this.hono.use((ctx, next) => {
 			const state = getRequestState(ctx, this.adapterOptions)
@@ -323,6 +333,37 @@ export class HonoAdapter extends AbstractHttpAdapter<
 
 	getType() {
 		return 'hono'
+	}
+
+	/**
+	 * Hono matches routes in registration order, so Nest keeps its
+	 * declaration-order registration (Nest 12).
+	 */
+	isRouteOrderSensitive() {
+		return true
+	}
+
+	/**
+	 * Nest 12 `@QueryMethod()` routes (HTTP `QUERY`). Installed as `query` on
+	 * the prototype below.
+	 */
+	registerQueryRoute(...args: RouteArguments) {
+		this.routes.register('query', ...args)
+	}
+
+	/**
+	 * Installed as `registerSecurityHook` on the prototype below.
+	 */
+	addSecurityHook(hook: SecurityRequestHook) {
+		this.hono.use(createSecurityHookMiddleware(hook))
+	}
+
+	/**
+	 * Installed as `beforeClose` on the prototype below; makes
+	 * `return503OnClosing` answer requests that arrive during shutdown.
+	 */
+	prepareClose() {
+		this.isShuttingDown = true
 	}
 
 	registerParserMiddleware(_prefix?: string, rawBody?: boolean) {
@@ -371,3 +412,22 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		return this.httpServer.listen(port, ...(args as []))
 	}
 }
+
+/**
+ * Nest 12 adds `query()`, `registerSecurityHook()` and `beforeClose()` to
+ * `AbstractHttpAdapter`. Declaring them in the class would need `override`
+ * on Nest 12 types and reject it on Nest 11 types, so the implementations are
+ * installed under those names here and the class compiles against both.
+ */
+const NEST_12_MEMBERS = {
+	beforeClose: HonoAdapter.prototype.prepareClose,
+	query: HonoAdapter.prototype.registerQueryRoute,
+	registerSecurityHook: HonoAdapter.prototype.addSecurityHook,
+} as const satisfies Record<string, Function>
+
+for (const [name, method] of Object.entries(NEST_12_MEMBERS))
+	Object.defineProperty(HonoAdapter.prototype, name, {
+		configurable: true,
+		value: method,
+		writable: true,
+	})

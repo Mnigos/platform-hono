@@ -37,6 +37,23 @@ async function scanInChunks(
 		scanner.write(body.subarray(offset, offset + chunkSize))
 }
 
+function scanBodyInChunks(
+	body: string,
+	limits: MultipartLimits,
+	chunkSize: number,
+	contentType = 'multipart/form-data; boundary=x'
+) {
+	const scanner = createMultipartLimitScanner(contentType, limits)
+	if (!scanner) throw new Error('Expected a multipart scanner')
+	const bytes = Buffer.from(body)
+	for (let offset = 0; offset < bytes.length; offset += chunkSize)
+		scanner.write(bytes.subarray(offset, offset + chunkSize))
+}
+
+function filePart(content: string, disposition = 'name="f"; filename="x"') {
+	return `--x\r\nContent-Disposition: form-data; ${disposition}\r\n\r\n${content}\r\n--x--\r\n`
+}
+
 const ENTRIES = [
 	{ content: 'alpha', name: 'first' },
 	{ content: 'beta', name: 'second' },
@@ -125,6 +142,148 @@ describe('createMultipartLimitScanner', () => {
 		expect(() => scanner?.write(encoder.encode('1234567890123456'))).toThrow(
 			new PayloadTooLargeException('File too large')
 		)
+	})
+
+	test.each([
+		'multipart/form-data; xboundary=decoy; boundary=real',
+		'multipart/form-data; boundary=decoy; boundary=real',
+	])('rejects ambiguous boundary parameters in %s', contentType => {
+		expect(() =>
+			createMultipartLimitScanner(contentType, { fileSize: 1 })
+		).toThrow(new BadRequestException('Malformed request body'))
+	})
+
+	test.each(
+		CHUNK_SIZES
+	)('uses a quoted boundary for file limits with %i byte chunks', chunkSize => {
+		const contentType = 'multipart/form-data; boundary="real"'
+		const body = filePart('x'.repeat(2000)).replaceAll('--x', '--real')
+		expect(() =>
+			scanBodyInChunks(body, { fileSize: 2000 }, chunkSize, contentType)
+		).not.toThrow()
+		expect(() =>
+			scanBodyInChunks(body, { fileSize: 1 }, chunkSize, contentType)
+		).toThrow(new PayloadTooLargeException('File too large'))
+	})
+
+	test.each(
+		CHUNK_SIZES
+	)('counts a fake delimiter as file data with %i byte chunks', chunkSize => {
+		const content = `abc\r\n--xNO\r\n\r\n${'z'.repeat(10_000)}`
+		expect(Buffer.byteLength(content)).toBe(10_014)
+		expect(() =>
+			scanBodyInChunks(filePart(content), { fileSize: 5 }, chunkSize)
+		).toThrow(new PayloadTooLargeException('File too large'))
+		expect(() =>
+			scanBodyInChunks(filePart(content), { fileSize: 10_014 }, chunkSize)
+		).not.toThrow()
+	})
+
+	test.each([
+		'NO\r\n\r\n',
+		' \t\r\n',
+		'-- \t\r\n',
+	])('keeps the delimiter suffix %j as file data at every chunk offset', suffix => {
+		const delimiter = `\r\n--x${suffix}`
+		for (let chunkSize = 1; chunkSize <= delimiter.length + 1; chunkSize += 1) {
+			const content = `abc${delimiter}${'z'.repeat(32)}`
+			expect(() =>
+				scanBodyInChunks(filePart(content), { fileSize: 5 }, chunkSize)
+			).toThrow(new PayloadTooLargeException('File too large'))
+			expect(() =>
+				scanBodyInChunks(
+					filePart(content),
+					{ fileSize: content.length },
+					chunkSize
+				)
+			).not.toThrow()
+		}
+	})
+
+	test('ends parts and closes the body only at complete CRLF delimiters at every chunk offset', () => {
+		const body = filePart('abc').replace(
+			'--x--\r\n',
+			'--x\r\nContent-Disposition: form-data; name="second"; filename="y"\r\n\r\nxyz\r\n--x--\r\n'
+		)
+		for (
+			let chunkSize = 1;
+			chunkSize <= '\r\n--x--\r\n'.length + 1;
+			chunkSize += 1
+		) {
+			expect(() =>
+				scanBodyInChunks(
+					`${body}${'epilogue'.repeat(20)}`,
+					{ files: 2, parts: 2, fileSize: 3 },
+					chunkSize
+				)
+			).not.toThrow()
+			expect(() => scanBodyInChunks(body, { files: 1 }, chunkSize)).toThrow(
+				new BadRequestException('Too many files')
+			)
+		}
+	})
+
+	test.each([
+		[{ files: 0 }, 'Too many files'],
+		[{ fileSize: 1 }, 'File too large'],
+	] as const)('counts a spaced filename parameter against %o', (limits, message) => {
+		for (const chunkSize of CHUNK_SIZES)
+			expect(() =>
+				scanBodyInChunks(
+					filePart('x'.repeat(64), 'name="f"; filename = "x"'),
+					limits,
+					chunkSize
+				)
+			).toThrow(message)
+	})
+
+	test.each([
+		[{ fields: 0 }, 'Too many fields'],
+		[{ files: 0 }, 'Too many files'],
+		[{ fileSize: 1 }, 'File too large'],
+	] as const)('counts filename* against %o for both parser interpretations', (limits, message) => {
+		for (const chunkSize of CHUNK_SIZES)
+			expect(() =>
+				scanBodyInChunks(
+					filePart('x'.repeat(64), 'name="f"; filename*=UTF-8\'\'x'),
+					limits,
+					chunkSize
+				)
+			).toThrow(message)
+	})
+
+	test.each([
+		'name="f; filename=decoy"',
+		'name="f\\"; filename=decoy"',
+	])('does not treat filename text inside the quoted parameter %s as a file', disposition => {
+		for (const chunkSize of CHUNK_SIZES) {
+			expect(() =>
+				scanBodyInChunks(
+					filePart('value', disposition),
+					{ files: 0, fields: 1, fileSize: 0 },
+					chunkSize
+				)
+			).not.toThrow()
+			expect(() =>
+				scanBodyInChunks(
+					filePart('value', disposition),
+					{ fields: 0 },
+					chunkSize
+				)
+			).toThrow(new BadRequestException('Too many fields'))
+		}
+	})
+
+	test('recognizes filenames containing escaped quotes and semicolons', () => {
+		for (const chunkSize of CHUNK_SIZES) {
+			const body = filePart('value', 'name="f\\";part"; filename="x\\";y"')
+			expect(() =>
+				scanBodyInChunks(body, { files: 1, fields: 0, fileSize: 5 }, chunkSize)
+			).not.toThrow()
+			expect(() => scanBodyInChunks(body, { files: 0 }, chunkSize)).toThrow(
+				new BadRequestException('Too many files')
+			)
+		}
 	})
 
 	test('rejects a complete part header over 16 KiB in one chunk', () => {
