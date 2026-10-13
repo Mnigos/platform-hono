@@ -1,38 +1,30 @@
 import type { Context } from 'hono'
-import { getBunServer } from '../helpers/bun-server'
 import { extractClientIp } from '../helpers/client-ip'
 import { isPathMatch } from '../helpers/path-matching'
 import { getNestHonoRequest, type NestHonoRequest } from '../helpers/request'
 import type { HonoAdapterOptions } from '../options'
 import {
+	type ContextTracking,
+	trackContext,
+} from '../response/context-tracking'
+import {
 	getResponseHeaders,
 	getSseBridge,
 	type SseBridge,
 } from '../response/sse-bridge'
+import { getNodeBindings, type NodeIncoming } from './request-headers'
 import {
 	createRequestSocketBridge,
-	type NodeSocketLike,
 	type RequestSocketBridge,
 } from './socket-bridge'
 
 type Listener = (...args: unknown[]) => void
 
-interface NodeIncoming {
-	headers: Record<string, string | string[] | undefined>
-	on: (event: string, listener: Listener) => unknown
-	socket?: NodeSocketLike & { remoteAddress?: string }
-}
-
-interface NodeRequestBindings {
-	incoming?: NodeIncoming
-	outgoing?: NodeSocketLike
-}
-
 /**
  * Per-request adapter state, computed once and shared by every middleware and
  * route layer instead of being recomputed per layer.
  */
-export interface RequestState {
+export interface RequestState extends ContextTracking {
 	contentType?: string | null
 	ctx: Context
 	currentRaw?: Request
@@ -50,7 +42,6 @@ export interface RequestState {
 	socketBridge?: RequestSocketBridge
 	sse?: SseBridge
 	sseWaiter?: (response: Response) => void
-	statusCode?: number
 }
 
 const REQUEST_STATE = Symbol('platformHonoRequestState')
@@ -59,10 +50,6 @@ interface StateCarrier {
 	on?: unknown
 	socket?: unknown
 	[REQUEST_STATE]: RequestState
-}
-
-function getNodeBindings(ctx: Context) {
-	return (ctx.env as NodeRequestBindings | undefined) ?? {}
 }
 
 function getSocketBridge(state: RequestState) {
@@ -286,6 +273,7 @@ export function getRequestState(ctx: Context, options: HonoAdapterOptions) {
 		options,
 		pathname: getUrlPathname(rawRequest.url),
 		rawRequest,
+		touched: false,
 	}
 	req[REQUEST_STATE] = state
 	if (req.ip === undefined) {
@@ -296,6 +284,7 @@ export function getRequestState(ctx: Context, options: HonoAdapterOptions) {
 	if (req.headers === undefined)
 		Object.defineProperty(req, 'headers', REQUEST_ACCESSORS.headers)
 	Object.defineProperty(ctx, 'raw', CONTEXT_RAW_ACCESSOR)
+	trackContext(ctx, state)
 	;(ctx as Context & { getHeaders?: unknown }).getHeaders = () =>
 		getResponseHeaders(ctx)
 	if (state.incoming?.socket && !req.socket)
@@ -316,125 +305,4 @@ export function shouldSkipBodyParser(state: RequestState) {
 		isPathMatch(state.pathname, path)
 	)
 	return state.skipBodyParser
-}
-
-/**
- * Reads a request header from Node's parsed `IncomingMessage` headers when
- * available, avoiding a Fetch `Headers` allocation on the Node.js path.
- */
-export function getRequestHeader(ctx: Context, name: string) {
-	return readRequestHeader(ctx.req.raw, getNodeBindings(ctx).incoming, name)
-}
-
-function readRequestHeader(
-	rawRequest: Request,
-	incoming: NodeIncoming | undefined,
-	name: string
-) {
-	const incomingHeaders = incoming?.headers
-	if (!incomingHeaders) return rawRequest.headers.get(name) ?? undefined
-	const value = incomingHeaders[name]
-	return Array.isArray(value) ? value.join(', ') : value
-}
-
-interface OptionalParameterSuffixLike {
-	name: string
-	suffix: string
-}
-
-/**
- * Sets `req.params` for the current route layer, stripping literal suffixes
- * from optional parameters such as `/:file{.json}`.
- */
-export function setRouteParams(
-	state: RequestState,
-	optionalParameterSuffixes: readonly OptionalParameterSuffixLike[]
-) {
-	const { ctx } = state
-	const params = ctx.req.param()
-	for (let index = optionalParameterSuffixes.length - 1; index >= 0; index--) {
-		const suffixEntry = optionalParameterSuffixes[index]
-		if (!suffixEntry) continue
-		const { name, suffix } = suffixEntry
-		const value = params[name]
-		if (value && value.length > suffix.length && value.endsWith(suffix))
-			params[name] = value.slice(0, -suffix.length)
-	}
-	const req = getNestHonoRequest(ctx.req)
-	const previousParams = state.routeParams
-	state.routeParams = { ...params }
-	if (previousParams && req.params)
-		keepParameterEdits(params, previousParams, req.params)
-	req.params = params
-}
-
-/**
- * Carries edits an earlier layer (such as Nest middleware) made to
- * `req.params` into the next layer's params, as long as the route matched the
- * same value for that parameter.
- */
-function keepParameterEdits(
-	params: Record<string, string>,
-	previousParams: Record<string, string>,
-	editedParams: Record<string, string>
-) {
-	for (const [name, value] of Object.entries(editedParams)) {
-		if (previousParams[name] === value) continue
-		if (!(name in params) || previousParams[name] === params[name])
-			params[name] = value
-	}
-	for (const name of Object.keys(previousParams))
-		if (!(name in editedParams) && previousParams[name] === params[name])
-			delete params[name]
-}
-
-/**
- * Whether the request arrived through a server that enforces HTTP framing
- * (`@hono/node-server` or `Bun.serve`), so its body cannot be longer than the
- * declared `Content-Length`. Direct `hono.fetch()`/`hono.request()` calls are
- * not framed and must have their bodies counted.
- */
-export function isTransportFramed(ctx: Context) {
-	return (
-		getNodeBindings(ctx).incoming !== undefined ||
-		getBunServer(ctx) !== undefined
-	)
-}
-
-/**
- * Whether the request can carry a body. For transport-framed requests,
- * HTTP/1.1 requests without `Content-Length` or `Transfer-Encoding` have none,
- * and `Bun.serve` never exposes `GET`/`HEAD` bodies, so body limits can skip
- * them without touching the body stream. Other requests are checked by body.
- */
-export function mayHaveRequestBody(state: RequestState) {
-	const { incoming, method, rawRequest } = state
-	if (!(incoming || getBunServer(state.ctx))) return rawRequest.body !== null
-	if (!incoming && (method === 'GET' || method === 'HEAD')) return false
-	if (
-		readRequestHeader(rawRequest, incoming, 'transfer-encoding') !== undefined
-	)
-		return true
-	const contentLength = readRequestHeader(
-		rawRequest,
-		incoming,
-		'content-length'
-	)
-	return contentLength !== undefined && contentLength !== '0'
-}
-
-/**
- * The request `Content-Type`, read once per request.
- */
-export function getContentType(state: RequestState) {
-	if (state.contentType === undefined)
-		state.contentType =
-			(state.currentRaw
-				? state.currentRaw.headers.get('content-type')
-				: readRequestHeader(
-						state.rawRequest,
-						state.incoming,
-						'content-type'
-					)) ?? null
-	return state.contentType ?? undefined
 }

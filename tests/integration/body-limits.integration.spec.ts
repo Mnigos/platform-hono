@@ -72,7 +72,7 @@ describe('body stream integration', () => {
 		['fetch', '1'],
 	] as const)('rejects an unframed six-byte body through %s with Content-Length %s', async (method, contentLength) => {
 		const adapter = new HonoAdapter({ bodyLimit: 3 })
-		adapter.registerParserMiddleware('', false)
+		adapter.initHttpServer({ rawBody: false })
 		adapter.setErrorHandler((error, _req, ctx) => {
 			if (!(error instanceof HttpException)) throw error
 			adapter.reply(ctx, error.getResponse(), error.getStatus())
@@ -88,9 +88,13 @@ describe('body stream integration', () => {
 			headers,
 			method: 'POST',
 		})
-		const response = await adapter.getInstance()[method](request)
-		expect(response.status).toBe(413)
-		await expect(response.json()).resolves.toMatchObject({ statusCode: 413 })
+		try {
+			const response = await adapter.getInstance()[method](request)
+			expect(response.status).toBe(413)
+			await expect(response.json()).resolves.toMatchObject({ statusCode: 413 })
+		} finally {
+			await adapter.close()
+		}
 	})
 
 	test('delivers a correctly framed body to the handler before the client finishes sending', async () => {
@@ -116,29 +120,23 @@ describe('body stream integration', () => {
 				return ctx.json({ bytes })
 			})
 		})
-		const client = request(`${app.baseUrl}/stream-prefix`, {
+		const abortController = new AbortController()
+		let bodyController!: ReadableStreamDefaultController<Uint8Array>
+		const response = fetch(`${app.baseUrl}/stream-prefix`, {
+			body: new ReadableStream<Uint8Array>({
+				start(controller) {
+					bodyController = controller
+					controller.enqueue(Buffer.from('abc'))
+				},
+			}),
+			duplex: 'half',
 			method: 'POST',
 			headers: { 'content-type': 'text/plain', 'content-length': '6' },
-		})
-		const response = new Promise<{ status?: number; body: string }>(
-			(resolve, reject) => {
-				client.on('error', reject)
-				client.on('response', incoming => {
-					const chunks: Buffer[] = []
-					incoming.on('data', chunk => chunks.push(Buffer.from(chunk)))
-					incoming.on('error', reject)
-					incoming.on('end', () =>
-						resolve({
-							status: incoming.statusCode,
-							body: Buffer.concat(chunks).toString(),
-						})
-					)
-				})
-			}
-		)
+			signal: abortController.signal,
+		} as RequestInit & { duplex: 'half' })
+		response.catch(() => undefined)
 		let timer: ReturnType<typeof setTimeout> | undefined
 		try {
-			client.write('abc')
 			await expect(
 				Promise.race([
 					prefix,
@@ -155,15 +153,16 @@ describe('body stream integration', () => {
 					}),
 				])
 			).resolves.toEqual([...Buffer.from('abc')])
-			client.end('def')
+			bodyController.enqueue(Buffer.from('def'))
+			bodyController.close()
 			const result = await response
 			expect(result.status).toBe(200)
-			expect(JSON.parse(result.body)).toEqual({
+			await expect(result.json()).resolves.toEqual({
 				bytes: [...Buffer.from('abcdef')],
 			})
 		} finally {
 			clearTimeout(timer)
-			client.destroy()
+			abortController.abort()
 			await response.catch(() => undefined)
 			await app.close()
 		}
@@ -225,7 +224,7 @@ describe('body stream integration', () => {
 	] as const)('rejects parsed FormData exceeding %o even when the scanner accepts it', async (limits, status, message) => {
 		// Each native parser accepts a header spelling the conservative scanner does not classify as a file.
 		const disposition =
-			typeof Bun === 'undefined'
+			typeof globalThis.Bun === 'undefined'
 				? ' Content-Disposition: form-data; name="f"; filename="x"'
 				: 'Content-Disposition: form-data; name="f"; filename="x"\n'
 		const body = `--x\r\n${disposition}\r\n\r\n1234567890\r\n--x--\r\n`

@@ -8,19 +8,16 @@ import {
 } from '@nestjs/common'
 import { AbstractHttpAdapter } from '@nestjs/core'
 import { type Context, Hono } from 'hono'
-import {
-	createBodyLimit,
-	enforceRequestBodyLimit,
-	parseBodyLimit,
-} from './helpers/body-parser'
+import { createBodyLimit, parseBodyLimit } from './helpers/body-parser'
 import { createCorsMiddleware, type NestCorsOptions } from './helpers/cors'
 import {
 	createSecurityHookMiddleware,
 	createShutdownMiddleware,
+	installNest12Members,
 	type Nest12ApplicationOptions,
 	type SecurityRequestHook,
 } from './helpers/nest-12'
-import { getRequestSizeLimit } from './helpers/path-matching'
+import { getRequestHostname, getRequestPathWithSearch } from './helpers/request'
 import {
 	finalizeResponse,
 	getFinalizedResponse,
@@ -32,12 +29,9 @@ import {
 	type StaticAssetsOptions,
 } from './helpers/static-assets'
 import type { HonoAdapterOptions } from './options'
+import { createBodyLimitMiddleware } from './request/body-limit-middleware'
 import { createParserMiddleware } from './request/body-parser-middleware'
-import {
-	getRequestState,
-	mayHaveRequestBody,
-	syncRawRequest,
-} from './request/request-state'
+import { getRequestState } from './request/request-state'
 import { type RouteArguments, RouteRegistry } from './routing/route-registry'
 import { createServer, type HonoHttpServer } from './server/create-server'
 
@@ -241,12 +235,9 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	getRequestHostname(requestOrContext: Context['req'] | Context) {
-		const request =
+		return getRequestHostname(
 			'req' in requestOrContext ? requestOrContext.req : requestOrContext
-		const host = request.header('host')
-		return host
-			? new URL(`http://${host}`).hostname
-			: new URL(request.url).hostname
+		)
 	}
 
 	getRequestMethod(request: Context['req']) {
@@ -254,8 +245,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	getRequestUrl(request: Context['req']) {
-		const url = new URL(request.url)
-		return `${url.pathname}${url.search}`
+		return getRequestPathWithSearch(request)
 	}
 
 	enableCors(options: NestCorsOptions = {}) {
@@ -307,26 +297,15 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		if ((options as Nest12ApplicationOptions).return503OnClosing)
 			this.hono.use(createShutdownMiddleware(() => this.isShuttingDown))
 
-		this.hono.use((ctx, next) => {
-			const state = getRequestState(ctx, this.adapterOptions)
-			if (!mayHaveRequestBody(state)) return next()
-			const requestSizeLimit = getRequestSizeLimit(
-				state.pathname,
-				this.adapterOptions.requestSizeLimits
-			)
-			const pendingLimit = enforceRequestBodyLimit(
-				ctx,
-				this.adapterOptions,
-				requestSizeLimit
-			)
-			if (!pendingLimit) return next()
-			return pendingLimit.then(() => {
-				syncRawRequest(state)
-				return next()
+		this.hono.use(
+			createBodyLimitMiddleware({
+				adapterOptions: this.adapterOptions,
+				parse:
+					options.bodyParser === false
+						? undefined
+						: this.createDefaultParserMiddleware(options.rawBody ?? false),
 			})
-		})
-		if (options.bodyParser !== false)
-			this.registerParserMiddleware(undefined, options.rawBody)
+		)
 
 		this.httpServer = createServer(this.hono, options, this.adapterOptions)
 	}
@@ -343,17 +322,12 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		return true
 	}
 
-	/**
-	 * Nest 12 `@QueryMethod()` routes (HTTP `QUERY`). Installed as `query` on
-	 * the prototype below.
-	 */
+	/** Nest 12 `@QueryMethod()` routes; installed as `query` below. */
 	registerQueryRoute(...args: RouteArguments) {
 		this.routes.register('query', ...args)
 	}
 
-	/**
-	 * Installed as `registerSecurityHook` on the prototype below.
-	 */
+	/** Installed as `registerSecurityHook` below. */
 	addSecurityHook(hook: SecurityRequestHook) {
 		this.hono.use(createSecurityHookMiddleware(hook))
 	}
@@ -367,6 +341,11 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	registerParserMiddleware(_prefix?: string, rawBody?: boolean) {
+		const parse = this.createDefaultParserMiddleware(rawBody ?? false)
+		if (parse) this.hono.use(parse)
+	}
+
+	private createDefaultParserMiddleware(rawBody: boolean) {
 		const missingTypes = DEFAULT_PARSER_TYPES.filter(
 			type => !this.registeredParserTypes.has(type)
 		)
@@ -375,19 +354,16 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		const parserTypes: string[] = []
 		this.batchedParserTypes = parserTypes
 		try {
-			for (const type of missingTypes)
-				this.useBodyParser(type, rawBody ?? false)
+			for (const type of missingTypes) this.useBodyParser(type, rawBody)
 		} finally {
 			this.batchedParserTypes = undefined
 		}
-		if (parserTypes.length > 0)
-			this.hono.use(
-				createParserMiddleware({
-					adapterOptions: this.adapterOptions,
-					parserTypes,
-					rawBody: rawBody ?? false,
-				})
-			)
+		if (parserTypes.length === 0) return
+		return createParserMiddleware({
+			adapterOptions: this.adapterOptions,
+			parserTypes,
+			rawBody,
+		})
 	}
 
 	createMiddlewareFactory(requestMethod: RequestMethod) {
@@ -413,21 +389,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 }
 
-/**
- * Nest 12 adds `query()`, `registerSecurityHook()` and `beforeClose()` to
- * `AbstractHttpAdapter`. Declaring them in the class would need `override`
- * on Nest 12 types and reject it on Nest 11 types, so the implementations are
- * installed under those names here and the class compiles against both.
- */
-const NEST_12_MEMBERS = {
+installNest12Members(HonoAdapter.prototype, {
 	beforeClose: HonoAdapter.prototype.prepareClose,
 	query: HonoAdapter.prototype.registerQueryRoute,
 	registerSecurityHook: HonoAdapter.prototype.addSecurityHook,
-} as const satisfies Record<string, Function>
-
-for (const [name, method] of Object.entries(NEST_12_MEMBERS))
-	Object.defineProperty(HonoAdapter.prototype, name, {
-		configurable: true,
-		value: method,
-		writable: true,
-	})
+})

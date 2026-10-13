@@ -7,11 +7,8 @@ import {
 	type MultipartLimits,
 	type RequestSizeLimit,
 } from '../options'
-import {
-	getRequestHeader,
-	isTransportFramed,
-	replaceRawRequest,
-} from '../request/request-state'
+import { getRequestHeader, isTransportFramed } from '../request/request-headers'
+import { replaceRawRequest } from '../request/request-state'
 import {
 	assertMultipartFormLimits,
 	createMultipartLimitScanner,

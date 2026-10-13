@@ -27,10 +27,6 @@ export interface SseBridge {
 	stream: HonoSseWritable
 }
 
-type RouteResult =
-	| { response: unknown; type: 'handler' }
-	| { response: Response; type: 'sse' }
-
 /**
  * Collects the response headers in Node's `getHeaders()` shape, keeping
  * repeated `set-cookie` values as an array.
@@ -102,34 +98,4 @@ function createSseBridge(state: RequestState) {
 export function getSseBridge(state: RequestState) {
 	state.sse ??= createSseBridge(state)
 	return state.sse
-}
-
-/**
- * Resolves with the route handler result, or with the streaming response as
- * soon as Nest starts an SSE stream, whose handler only settles on close.
- */
-export function waitForRouteResult(
-	state: RequestState,
-	handlerPromise: Promise<unknown>
-) {
-	return new Promise<RouteResult>((resolve, reject) => {
-		const sseResponse = state.sse?.response
-		if (sseResponse) {
-			resolve({ response: sseResponse, type: 'sse' })
-			return
-		}
-		handlerPromise.then(
-			response => resolve({ response, type: 'handler' }),
-			reject
-		)
-		const resolveSse = (response: Response) =>
-			resolve({ response, type: 'sse' })
-		const previousWaiter = state.sseWaiter
-		state.sseWaiter = previousWaiter
-			? response => {
-					previousWaiter(response)
-					resolveSse(response)
-				}
-			: resolveSse
-	})
 }

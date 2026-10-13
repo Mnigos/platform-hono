@@ -1,34 +1,41 @@
 import { Readable } from 'node:stream'
 import { StreamableFile } from '@nestjs/common'
 import type { Context } from 'hono'
-import { withLightweightResponse } from '../server/node-response'
+import { getUntouchedTracking } from '../response/context-tracking'
+import {
+	createFetchResponse,
+	createNodeStreamResponse,
+	createStreamableFileResponse,
+	createStreamResponse,
+	getClientSocket,
+} from '../response/stream-response'
+import {
+	getLightweightResponse,
+	withLightweightResponse,
+} from '../server/node-response'
 
 interface FinalizedResponse {
 	response: Response
 	source: Response
 }
 
-interface SocketLike {
-	destroyed?: boolean
-	off(event: 'close', listener: () => void): void
-	once(event: 'close', listener: () => void): void
-}
+const FINALIZED_RESPONSE = Symbol('platformHonoFinalizedResponse')
+const FINALIZE_LISTENERS = Symbol('platformHonoFinalizeListeners')
 
-interface NodeRequestEnvironment {
-	incoming?: { socket?: SocketLike }
+interface FinalizableContext extends Context {
+	[FINALIZED_RESPONSE]?: FinalizedResponse
+	[FINALIZE_LISTENERS]?: Set<() => void>
 }
-
-const finalizedResponses = new WeakMap<Context, FinalizedResponse>()
-const finalizeListeners = new WeakMap<Context, Set<() => void>>()
 
 /**
  * Registers a listener called when a response is finalized on the Hono
  * context and returns a function that removes it.
  */
 export function onResponseFinalized(ctx: Context, listener: () => void) {
-	const listeners = finalizeListeners.get(ctx) ?? new Set()
+	const finalizable = ctx as FinalizableContext
+	const listeners = finalizable[FINALIZE_LISTENERS] ?? new Set()
 	listeners.add(listener)
-	finalizeListeners.set(ctx, listeners)
+	finalizable[FINALIZE_LISTENERS] = listeners
 	return () => listeners.delete(listener)
 }
 
@@ -43,7 +50,8 @@ export function finalizeResponse(
 	response: Response,
 	includesContextHeaders = false
 ) {
-	const finalized = finalizedResponses.get(ctx)
+	const finalizable = ctx as FinalizableContext
+	const finalized = finalizable[FINALIZED_RESPONSE]
 	if (
 		ctx.finalized &&
 		(finalized?.response === response || finalized?.source === response)
@@ -54,168 +62,13 @@ export function finalizeResponse(
 	if (includesContextHeaders) ctx.res = undefined
 	ctx.res = response
 	const contextResponse = ctx.res
-	finalizedResponses.set(ctx, { response: contextResponse, source: response })
-	for (const listener of finalizeListeners.get(ctx) ?? []) listener()
+	finalizable[FINALIZED_RESPONSE] = {
+		response: contextResponse,
+		source: response,
+	}
+	const listeners = finalizable[FINALIZE_LISTENERS]
+	if (listeners) for (const listener of listeners) listener()
 	return contextResponse
-}
-
-function setStreamableFileHeader(
-	headers: Headers,
-	name: string,
-	value: number | string | string[] | undefined
-) {
-	if (value === undefined || headers.has(name)) return
-	headers.set(name, Array.isArray(value) ? value.join(', ') : String(value))
-}
-
-function toUint8Array(chunk: unknown) {
-	if (typeof chunk === 'string') return new TextEncoder().encode(chunk)
-	if (chunk instanceof Uint8Array) return chunk
-	if (chunk instanceof ArrayBuffer) return new Uint8Array(chunk)
-
-	const constructorName =
-		chunk === null ? 'null' : (new Object(chunk).constructor?.name ?? 'unknown')
-	throw new TypeError(
-		`Unsupported response stream chunk type: ${typeof chunk}, constructor: ${constructorName}`
-	)
-}
-
-function getClientSocket(ctx: Context) {
-	return (ctx.env as NodeRequestEnvironment | undefined)?.incoming?.socket
-}
-
-function registerClientDisconnect(ctx: Context, listener: () => void) {
-	const socket = getClientSocket(ctx)
-	const signal = ctx.req.raw.signal
-	if (socket?.destroyed || signal.aborted) queueMicrotask(listener)
-	else {
-		socket?.once('close', listener)
-		signal.addEventListener('abort', listener, { once: true })
-	}
-
-	return () => {
-		socket?.off('close', listener)
-		signal.removeEventListener('abort', listener)
-	}
-}
-
-function createByteStream(ctx: Context, stream: ReadableStream<unknown>) {
-	const reader = stream.getReader()
-	let finished = false
-	let cleanup: () => void = () => undefined
-	const cancelSource = async (reason?: unknown) => {
-		if (finished) return
-		finished = true
-		cleanup()
-		await reader.cancel(reason).catch(() => undefined)
-	}
-	cleanup = registerClientDisconnect(ctx, () => {
-		cancelSource(new Error('Client disconnected')).catch(() => undefined)
-	})
-
-	return new ReadableStream<Uint8Array>({
-		async cancel(reason) {
-			await cancelSource(reason)
-		},
-		async pull(controller) {
-			try {
-				const { done, value } = await reader.read()
-				if (finished || done) {
-					finished = true
-					cleanup()
-					controller.close()
-					return
-				}
-				controller.enqueue(toUint8Array(value))
-			} catch (error) {
-				await cancelSource(error)
-				controller.error(error)
-			}
-		},
-	})
-}
-
-/**
- * Converts a Node.js `Readable` into a pull-based Web stream. Unlike
- * `Readable.toWeb()`, a cancelled stream never receives a late `enqueue()`
- * from buffered data, which Node.js reports as an uncaught
- * `ERR_INVALID_STATE` (for example when a `HEAD` request cancels a file).
- */
-function toWebStream(readable: Readable) {
-	const iterator = readable[Symbol.asyncIterator]()
-	let cancelled = false
-	return new ReadableStream<unknown>({
-		cancel() {
-			cancelled = true
-			readable.destroy()
-			iterator.return?.().catch(() => undefined)
-		},
-		async pull(controller) {
-			const result = await iterator.next().catch(error => {
-				if (cancelled) return { done: true, value: undefined }
-				throw error
-			})
-			if (cancelled) return
-			if (result.done) controller.close()
-			else controller.enqueue(result.value)
-		},
-	})
-}
-
-function createReadableStream(ctx: Context, readable: Readable) {
-	return createByteStream(ctx, toWebStream(readable))
-}
-
-function createStreamResponse(ctx: Context, stream: ReadableStream<unknown>) {
-	const responseContentType = ctx.res.headers.get('Content-Type')
-	if (!responseContentType) {
-		ctx.res.headers.set('Content-Type', 'application/octet-stream')
-	}
-
-	return ctx.body(createByteStream(ctx, stream))
-}
-
-function createNodeStreamResponse(ctx: Context, readable: Readable) {
-	return createStreamResponse(ctx, toWebStream(readable))
-}
-
-function createStreamableFileResponse(ctx: Context, file: StreamableFile) {
-	const { disposition, length, type } = file.getHeaders()
-	const readable = file.getStream()
-	const socket = getClientSocket(ctx)
-
-	setStreamableFileHeader(ctx.res.headers, 'Content-Type', type)
-	setStreamableFileHeader(ctx.res.headers, 'Content-Disposition', disposition)
-	setStreamableFileHeader(ctx.res.headers, 'Content-Length', length)
-
-	readable.once('error', error => {
-		try {
-			file.errorHandler(error, {
-				get destroyed() {
-					return socket?.destroyed ?? ctx.req.raw.signal.aborted
-				},
-				end() {
-					readable.destroy()
-				},
-				get headersSent() {
-					return ctx.finalized
-				},
-				send(body) {
-					ctx.res = ctx.body(body)
-				},
-				get statusCode() {
-					return ctx.res.status
-				},
-				set statusCode(statusCode) {
-					ctx.status(statusCode as Parameters<Context['status']>[0])
-				},
-			})
-		} finally {
-			file.errorLogger(error)
-		}
-	})
-
-	return ctx.body(createReadableStream(ctx, readable))
 }
 
 export function isJsonContentType(contentType: string | null) {
@@ -223,15 +76,6 @@ export function isJsonContentType(contentType: string | null) {
 	if (contentType === 'application/json') return true
 	const mediaType = contentType?.split(';', 1)[0]?.trim().toLowerCase()
 	return mediaType === 'application/json' || mediaType?.endsWith('+json')
-}
-
-function createFetchResponse(ctx: Context, response: Response) {
-	if (!response.body) return response
-	return new Response(createByteStream(ctx, response.body), {
-		headers: response.headers,
-		status: response.status,
-		statusText: response.statusText,
-	})
 }
 
 interface BuiltResponse {
@@ -260,15 +104,15 @@ function buildResponse(ctx: Context, body?: unknown): BuiltResponse {
 	if (body instanceof ReadableStream)
 		return fromContext(createStreamResponse(ctx, body))
 
-	if (body === undefined && finalizedResponses.has(ctx)) {
-		return fromElsewhere(
-			(finalizedResponses.get(ctx) as FinalizedResponse).response
-		)
-	}
+	const finalized = (ctx as FinalizableContext)[FINALIZED_RESPONSE]
+	if (body === undefined && finalized) return fromElsewhere(finalized.response)
 
 	if (body === undefined && ctx.res && ctx.res.body !== null) {
 		return fromElsewhere(ctx.res)
 	}
+
+	const directResponse = buildDirectResponse(ctx, body)
+	if (directResponse) return fromContext(directResponse)
 
 	if (typeof body === 'object' && !(body instanceof Buffer))
 		return fromContext(createJsonResponse(ctx, body))
@@ -282,6 +126,30 @@ function buildResponse(ctx: Context, body?: unknown): BuiltResponse {
 				: ctx.body(body as unknown as string)
 		)
 	)
+}
+
+/**
+ * Builds string and JSON replies directly while no middleware or handler has
+ * touched the Hono response state, which gives the same response as Hono's
+ * `ctx.body()`/`ctx.newResponse()` without merging empty header sets. On
+ * Node.js the plain header object lets `@hono/node-server` write the head
+ * without converting a `Headers` instance. The header object is created per
+ * response because `@hono/node-server` adds `Content-Length` to it.
+ */
+function buildDirectResponse(ctx: Context, body: unknown) {
+	const isJson = typeof body === 'object' && !(body instanceof Buffer)
+	if (!(isJson || typeof body === 'string')) return
+	const tracking = getUntouchedTracking(ctx)
+	if (!tracking || contextsWithHeaders.has(ctx)) return
+	const ResponseClass = getClientSocket(ctx)
+		? getLightweightResponse()
+		: Response
+	const status = tracking.statusCode ?? 200
+	if (!isJson) return new ResponseClass(body as string, { status })
+	return new ResponseClass(JSON.stringify(body), {
+		headers: { 'content-type': 'application/json' },
+		status,
+	})
 }
 
 function createBufferResponse(ctx: Context, body: Buffer) {

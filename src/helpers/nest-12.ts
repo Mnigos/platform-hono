@@ -57,3 +57,28 @@ export function createShutdownMiddleware(
 		)
 	}
 }
+
+interface Nest12Members {
+	beforeClose: Function
+	query: Function
+	registerSecurityHook: Function
+}
+
+/**
+ * Nest 12 adds `query()`, `registerSecurityHook()` and `beforeClose()` to
+ * `AbstractHttpAdapter`. Declaring them in the adapter class would need
+ * `override` on Nest 12 types and reject it on Nest 11 types, so the
+ * implementations are installed under those names on the prototype instead,
+ * and the class compiles against both versions.
+ */
+export function installNest12Members(
+	prototype: object,
+	members: Nest12Members
+) {
+	for (const [name, method] of Object.entries(members))
+		Object.defineProperty(prototype, name, {
+			configurable: true,
+			value: method,
+			writable: true,
+		})
+}

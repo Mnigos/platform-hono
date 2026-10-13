@@ -4,8 +4,8 @@ import {
 	shouldParseRequestBody,
 } from '../helpers/body-parser'
 import type { HonoAdapterOptions } from '../options'
+import { getContentType } from './request-headers'
 import {
-	getContentType,
 	getRequestState,
 	shouldSkipBodyParser,
 	syncRawRequest,

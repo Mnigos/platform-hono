@@ -20,3 +20,21 @@ export interface NestHonoRequest extends Record<string, unknown> {
 export function getNestHonoRequest(req: Context['req']) {
 	return req as unknown as NestHonoRequest
 }
+
+/**
+ * Host name of a request, from the `Host` header or else the request URL.
+ */
+export function getRequestHostname(request: Context['req']) {
+	const host = request.header('host')
+	return host
+		? new URL(`http://${host}`).hostname
+		: new URL(request.url).hostname
+}
+
+/**
+ * Path and query string of a request URL, as Express `req.originalUrl`.
+ */
+export function getRequestPathWithSearch(request: Context['req']) {
+	const url = new URL(request.url)
+	return `${url.pathname}${url.search}`
+}

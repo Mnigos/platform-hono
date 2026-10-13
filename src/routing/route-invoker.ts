@@ -8,15 +8,15 @@ import {
 import type { HonoAdapterOptions } from '../options'
 import {
 	getRequestState,
-	setRouteParams,
+	type RequestState,
 	syncRawRequest,
 } from '../request/request-state'
-import { waitForRouteResult } from '../response/sse-bridge'
+import { setRouteParams } from '../request/route-params'
 import type { OptionalParameterSuffix } from './route-paths'
 
 const noop = () => undefined
 
-async function finalizeRouteResponse(
+function finalizeRouteResponse(
 	ctx: Context,
 	adapterOptions: HonoAdapterOptions,
 	response?: Response
@@ -24,7 +24,14 @@ async function finalizeRouteResponse(
 	const finalized = getFinalizedResponse(ctx, response)
 	const state = getRequestState(ctx, adapterOptions)
 	if (state.method !== 'HEAD' || !finalized.body) return finalized
+	return finalizeHeadResponse(ctx, state, finalized)
+}
 
+async function finalizeHeadResponse(
+	ctx: Context,
+	state: RequestState,
+	finalized: Response
+) {
 	const sseStream = state.sse?.started ? state.sse.stream : undefined
 	if (sseStream) {
 		state.socketBridge?.signalClose()
@@ -36,7 +43,7 @@ async function finalizeRouteResponse(
 			sseStream.once('close', resolve)
 			sseStream.destroy()
 		})
-	} else await finalized.body.cancel().catch(() => undefined)
+	} else await finalized.body?.cancel().catch(() => undefined)
 	return finalizeResponse(
 		ctx,
 		new Response(null, {
@@ -51,12 +58,12 @@ async function finalizeRouteResponse(
  * Calls a Nest handler with Express-style `(req, res, next)` arguments. For
  * middleware, waits until it calls `next()` or finalizes the response.
  */
-export async function invokeHandler(
+export function invokeHandler(
 	handler: RequestHandler | Function,
 	ctx: Context,
 	next: () => Promise<void>,
 	waitForNext = false
-) {
+): Promise<unknown> {
 	let nextPromise: Promise<void> | undefined
 	let notifyNextCall: () => void = noop
 	const nestNext = (error?: unknown) => {
@@ -69,22 +76,30 @@ export async function invokeHandler(
 		notifyNextCall()
 		return nextPromise
 	}
-	const response = await handler(ctx.req, ctx, nestNext)
-	if (
-		!nextPromise &&
-		waitForNext &&
-		!(response instanceof Response) &&
-		!ctx.finalized
-	) {
-		const nextCalled = new Promise<void>(resolve => {
+	const afterNext = (response: unknown) =>
+		nextPromise ? nextPromise.then(() => response) : response
+	const settle = (response: unknown) => {
+		if (
+			nextPromise ||
+			!waitForNext ||
+			response instanceof Response ||
+			ctx.finalized
+		)
+			return afterNext(response)
+		let removeFinalizeListener: () => void = noop
+		return new Promise<void>(resolve => {
 			notifyNextCall = resolve
+			removeFinalizeListener = onResponseFinalized(ctx, resolve)
+		}).then(() => {
+			removeFinalizeListener()
+			return afterNext(response)
 		})
-		const removeFinalizeListener = onResponseFinalized(ctx, notifyNextCall)
-		await nextCalled
-		removeFinalizeListener()
 	}
-	if (nextPromise) await nextPromise
-	return response
+	try {
+		return Promise.resolve(handler(ctx.req, ctx, nestNext)).then(settle)
+	} catch (error) {
+		return Promise.reject(error)
+	}
 }
 
 interface RouteHandlerOptions {
@@ -105,23 +120,49 @@ export function createRouteHandler({
 	routeHandler,
 	waitForNext = false,
 }: RouteHandlerOptions): MiddlewareHandler {
-	return async (ctx, next) => {
+	return (ctx, next) => {
 		const state = getRequestState(ctx, adapterOptions)
 		syncRawRequest(state)
 		setRouteParams(state, optionalParameterSuffixes)
 		const handlerPromise = invokeHandler(routeHandler, ctx, next, waitForNext)
-		const result = await waitForRouteResult(state, handlerPromise)
-		if (result.type === 'sse') {
-			handlerPromise.catch(error => {
-				state.sse?.stream.destroy(error)
-			})
-			return finalizeRouteResponse(ctx, adapterOptions, result.response)
-		}
-		return finalizeRouteResponse(
-			ctx,
-			adapterOptions,
-			result.response instanceof Response ? result.response : undefined
-		)
+		return new Promise<Response | undefined>((resolve, reject) => {
+			let settled = false
+			const finish = (response: Response | undefined) => {
+				if (settled) return
+				settled = true
+				try {
+					resolve(finalizeRouteResponse(ctx, adapterOptions, response))
+				} catch (error) {
+					reject(error)
+				}
+			}
+			const finishSse = (response: Response) => {
+				handlerPromise.catch(error => {
+					state.sse?.stream.destroy(error)
+				})
+				finish(response)
+			}
+			const sseResponse = state.sse?.response
+			if (sseResponse) {
+				finishSse(sseResponse)
+				return
+			}
+			handlerPromise.then(
+				response => finish(response instanceof Response ? response : undefined),
+				error => {
+					if (settled) return
+					settled = true
+					reject(error)
+				}
+			)
+			const previousWaiter = state.sseWaiter
+			state.sseWaiter = previousWaiter
+				? response => {
+						previousWaiter(response)
+						finishSse(response)
+					}
+				: finishSse
+		})
 	}
 }
 

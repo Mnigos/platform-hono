@@ -185,18 +185,19 @@ describe('createMultipartLimitScanner', () => {
 		'-- \t\r\n',
 	])('keeps the delimiter suffix %j as file data at every chunk offset', suffix => {
 		const delimiter = `\r\n--x${suffix}`
-		for (let chunkSize = 1; chunkSize <= delimiter.length + 1; chunkSize += 1) {
+		const chunkSize = delimiter.length + 1
+		for (let padding = 0; padding < chunkSize; padding += 1) {
+			// Shift the delimiter across every possible chunk boundary.
 			const content = `abc${delimiter}${'z'.repeat(32)}`
-			expect(() =>
-				scanBodyInChunks(filePart(content), { fileSize: 5 }, chunkSize)
-			).toThrow(new PayloadTooLargeException('File too large'))
-			expect(() =>
-				scanBodyInChunks(
-					filePart(content),
-					{ fileSize: content.length },
-					chunkSize
+			const body = `${'p'.repeat(padding)}${filePart(content)}`
+			for (const size of [1, chunkSize]) {
+				expect(() => scanBodyInChunks(body, { fileSize: 5 }, size)).toThrow(
+					new PayloadTooLargeException('File too large')
 				)
-			).not.toThrow()
+				expect(() =>
+					scanBodyInChunks(body, { fileSize: content.length }, size)
+				).not.toThrow()
+			}
 		}
 	})
 
@@ -205,21 +206,21 @@ describe('createMultipartLimitScanner', () => {
 			'--x--\r\n',
 			'--x\r\nContent-Disposition: form-data; name="second"; filename="y"\r\n\r\nxyz\r\n--x--\r\n'
 		)
-		for (
-			let chunkSize = 1;
-			chunkSize <= '\r\n--x--\r\n'.length + 1;
-			chunkSize += 1
-		) {
-			expect(() =>
-				scanBodyInChunks(
-					`${body}${'epilogue'.repeat(20)}`,
-					{ files: 2, parts: 2, fileSize: 3 },
-					chunkSize
+		const chunkSize = '\r\n--x--\r\n'.length + 1
+		for (let padding = 0; padding < chunkSize; padding += 1) {
+			const shiftedBody = `${'p'.repeat(padding)}${body}${'epilogue'.repeat(20)}`
+			for (const size of [1, chunkSize]) {
+				expect(() =>
+					scanBodyInChunks(
+						shiftedBody,
+						{ files: 2, parts: 2, fileSize: 3 },
+						size
+					)
+				).not.toThrow()
+				expect(() => scanBodyInChunks(shiftedBody, { files: 1 }, size)).toThrow(
+					new BadRequestException('Too many files')
 				)
-			).not.toThrow()
-			expect(() => scanBodyInChunks(body, { files: 1 }, chunkSize)).toThrow(
-				new BadRequestException('Too many files')
-			)
+			}
 		}
 	})
 
