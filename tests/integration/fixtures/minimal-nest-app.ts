@@ -424,5 +424,6 @@ export async function startApp(
 		adapter,
 		baseUrl: `http://127.0.0.1:${address.port}`,
 		close: () => app.close(),
+		getUrl: () => app.getUrl(),
 	}
 }

@@ -104,4 +104,16 @@ describe('client IP extraction', () => {
 			extractClientIp(ctx, { trustProxy: { headers: ['forwarded'] } })
 		).toBeUndefined()
 	})
+
+	test('reads the direct client address from the Bun server', () => {
+		const requestIP = vi.fn(() => ({ address: '::ffff:198.51.100.20' }))
+		const raw = new Request('http://localhost/')
+		const ctx = {
+			env: { requestIP, timeout: vi.fn() },
+			req: { header: () => undefined, raw },
+		} as unknown as Context
+
+		expect(extractClientIp(ctx, {})).toBe('::ffff:198.51.100.20')
+		expect(requestIP).toHaveBeenCalledWith(raw)
+	})
 })

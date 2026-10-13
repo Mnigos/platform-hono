@@ -35,7 +35,7 @@
     "check:fix": "ultracite fix --unsafe",
     "clean": "git clean -xdf .cache .turbo coverage dist node_modules",
     "prepublish:version": "changeset version",
-    "prepublish:check": "bun run check && bun run typecheck && bun run test && bun run test:integration && bun run build && bun run test:exports",
+    "prepublish:check": "bun run check && bun run typecheck && bun run test && bun run test:integration && bun run test:integration:bun && bun run build && bun run test:exports",
     "prepublishOnly": "bun run prepublish:check",
     "publish:public": "npm publish --access public",
     "release": "changeset publish",
@@ -43,6 +43,7 @@
     "test:coverage": "vitest run --coverage",
     "test:exports": "bun scripts/check-exports.ts",
     "test:integration": "vitest run -c vitest.integration.config.ts",
+    "test:integration:bun": "bun --bun vitest run -c vitest.integration.config.ts",
     "typecheck": "tsc --noEmit"
   },
   "peerDependencies": {

@@ -6,6 +6,10 @@ import {
 	type HonoAdapterOptions,
 	type RequestSizeLimit,
 } from '../options'
+import {
+	createMultipartLimitScanner,
+	type MultipartLimitScanner,
+} from './multipart-limits'
 import { getNestHonoRequest } from './request'
 
 export async function parseRequestBody(
@@ -38,12 +42,17 @@ export async function enforceRequestBodyLimit(
 	requestSizeLimit?: RequestSizeLimit
 ) {
 	const effectiveBodyLimit = getEffectiveBodyLimit(options, requestSizeLimit)
-	if (effectiveBodyLimit === undefined) return
+	const multipartScanner = createMultipartLimitScanner(
+		ctx.req.header('content-type'),
+		options.multipartLimits
+	)
+	if (effectiveBodyLimit === undefined && !multipartScanner) return
 
 	await enforceRawBodyLimit(
 		ctx,
-		effectiveBodyLimit,
-		requestSizeLimit?.errorMessage ?? 'Payload too large'
+		effectiveBodyLimit ?? Number.POSITIVE_INFINITY,
+		requestSizeLimit?.errorMessage ?? 'Payload too large',
+		multipartScanner
 	)
 }
 
@@ -191,7 +200,8 @@ function convertFormData(formData: FormDataLike) {
 async function enforceRawBodyLimit(
 	ctx: Context,
 	maxBytes: number,
-	errorMessage: string
+	errorMessage: string,
+	multipartScanner?: MultipartLimitScanner
 ) {
 	const rawRequest = ctx.req.raw
 	const incoming = (ctx.env as NodeRequestEnvironment | undefined)?.incoming
@@ -223,6 +233,12 @@ async function enforceRawBodyLimit(
 		if (size > maxBytes) {
 			await reader.cancel().catch(() => undefined)
 			throw new PayloadTooLargeException(errorMessage)
+		}
+		try {
+			multipartScanner?.write(value)
+		} catch (error) {
+			await reader.cancel().catch(() => undefined)
+			throw error
 		}
 
 		chunks.push(value)

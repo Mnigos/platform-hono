@@ -5,6 +5,7 @@ import {
 	DEFAULT_TRUSTED_PROXY_HEADERS,
 	type HonoAdapterOptions,
 } from '../options'
+import { getBunServer } from './bun-server'
 
 const QUOTED_VALUE_REGEX = /^"|"$/g
 const BRACKETED_IP_WITH_OPTIONAL_PORT_REGEX = /^\[(.*)](?::\d+)?$/
@@ -41,10 +42,16 @@ export function extractClientIp(ctx: Context, options: HonoAdapterOptions) {
 
 function getDirectClientIp(ctx: Context) {
 	try {
-		return normalizeIpAddress(getConnInfo(ctx).remote.address)
+		return normalizeIpAddress(getRemoteAddress(ctx))
 	} catch {
 		return
 	}
+}
+
+function getRemoteAddress(ctx: Context) {
+	const bunServer = getBunServer(ctx)
+	if (bunServer) return bunServer.requestIP(ctx.req.raw)?.address
+	return getConnInfo(ctx).remote.address
 }
 
 function parseClientIpHeader(
