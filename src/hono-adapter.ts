@@ -1,15 +1,6 @@
 import { EventEmitter } from 'node:events'
-import {
-	createServer as createHttpServer,
-	type Server as HttpServer,
-	type OutgoingHttpHeaders,
-} from 'node:http'
-import {
-	createServer as createHttpsServer,
-	type Server as HttpsServer,
-} from 'node:https'
+import type { OutgoingHttpHeaders } from 'node:http'
 import { PassThrough, Readable } from 'node:stream'
-import { createAdaptorServer } from '@hono/node-server'
 import {
 	type ServeStaticOptions,
 	serveStatic,
@@ -36,6 +27,7 @@ import {
 	enforceRequestBodyLimit,
 	parseRequestBody,
 } from './helpers/body-parser'
+import { getBunServer } from './helpers/bun-server'
 import { extractClientIp } from './helpers/client-ip'
 import { getRequestSizeLimit, isPathMatch } from './helpers/path-matching'
 import { getNestHonoRequest } from './helpers/request'
@@ -47,6 +39,7 @@ import {
 	onResponseFinalized,
 } from './helpers/response'
 import type { HonoAdapterOptions } from './options'
+import { createServer, type HonoHttpServer } from './server/create-server'
 
 type RouteHandler = (
 	req: Context['req'],
@@ -493,7 +486,7 @@ function parseBodyLimit(limit: number | string | undefined) {
 }
 
 export class HonoAdapter extends AbstractHttpAdapter<
-	HttpServer | HttpsServer,
+	HonoHttpServer,
 	Context['req'],
 	Context
 > {
@@ -693,6 +686,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		stream.flushHeaders = () => undefined
 		stream.writeHead = (statusCode, reasonPhraseOrHeaders, headers) => {
 			sseCtx.sseStarted = true
+			getBunServer(ctx)?.timeout(ctx.req.raw, 0)
 			const outgoingHeaders =
 				typeof reasonPhraseOrHeaders === 'string'
 					? headers
@@ -1061,7 +1055,8 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	close(): Promise<void> {
 		return new Promise(resolve => {
 			this.httpServer.close(() => resolve())
-			this.httpServer.closeIdleConnections?.()
+			if ('closeIdleConnections' in this.httpServer)
+				this.httpServer.closeIdleConnections()
 			if (this.forceCloseConnections) this.httpServer.closeAllConnections?.()
 		})
 	}
@@ -1085,16 +1080,10 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		}
 		req.params = params
 		if (typeof req.query === 'function' || !req.query) {
-			const queries = ctx.req.queries()
-			req.query = Object.fromEntries(
-				Object.entries(ctx.req.query()).map(([key, value]) => {
-					const queryValues = queries[key]
-					return [
-						key,
-						queryValues && queryValues.length > 1 ? queryValues : value,
-					]
-				})
-			)
+			const query: Record<string, string | string[]> = Object.create(null)
+			for (const [key, values] of Object.entries(ctx.req.queries()))
+				query[key] = values.length > 1 ? values : (values[0] ?? '')
+			req.query = query
 		}
 
 		const pathname = new URL(ctx.req.url).pathname
@@ -1121,20 +1110,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		if (options.bodyParser !== false)
 			this.registerParserMiddleware(undefined, options.rawBody)
 
-		this.httpServer = (
-			options.httpsOptions
-				? createAdaptorServer({
-						fetch: this.hono.fetch,
-						createServer: createHttpsServer,
-						overrideGlobalObjects: false,
-						serverOptions: options.httpsOptions,
-					})
-				: createAdaptorServer({
-						fetch: this.hono.fetch,
-						createServer: createHttpServer,
-						overrideGlobalObjects: false,
-					})
-		) as HttpServer | HttpsServer
+		this.httpServer = createServer(this.hono, options, this.adapterOptions)
 	}
 
 	getType() {
@@ -1196,7 +1172,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		throw new Error('Versioning not yet supported in Hono')
 	}
 
-	override listen(port: number, ...args: unknown[]): HttpServer | HttpsServer {
+	override listen(port: number, ...args: unknown[]): HonoHttpServer {
 		return this.httpServer.listen(port, ...(args as []))
 	}
 }

@@ -3,7 +3,8 @@
 NestJS HTTP adapter for Hono.
 
 This package provides the extracted Hono adapter used by `rigtch.fm`. It is
-designed for Bun-first NestJS applications and keeps the adapter surface small:
+designed for Bun-first NestJS applications, serves with `Bun.serve` on Bun and
+`@hono/node-server` on Node.js, and keeps the adapter surface small:
 `HonoAdapter`, `HonoAdapterOptions`, and the `NestHonoRequest` request type.
 
 ## Installation
@@ -29,6 +30,58 @@ const app = await NestFactory.create(AppModule, adapter)
 
 await app.listen(3000)
 ```
+
+## Runtime
+
+On Bun, the adapter serves Hono directly with `Bun.serve`. On Node.js it uses
+`@hono/node-server`. The default `runtime: 'auto'` picks Bun whenever the `Bun`
+global exists, so the same application code runs on both.
+
+```ts
+// Bun.serve on Bun, @hono/node-server on Node.js (default)
+new HonoAdapter({ runtime: 'auto' })
+
+// Always use @hono/node-server, including on Bun through node:http
+new HonoAdapter({ runtime: 'node' })
+
+// Require Bun; Nest bootstrap fails on Node.js
+new HonoAdapter({ runtime: 'bun' })
+```
+
+`Bun.serve` skips the `node:http` compatibility layer and the
+`IncomingMessage` to Fetch `Request` conversion, so it is the faster path on
+Bun.
+
+### Bun server
+
+`app.getHttpServer()` returns a small wrapper around `Bun.serve` instead of a
+Node.js `http.Server`. It supports what Nest needs: `listen()`, `address()`,
+`close()`, `closeAllConnections()`, `listening`, and the `listening`, `error`,
+and `close` events. Code that relies on Node.js server internals, such as
+`server.on('connection')`, sockets, `server.timeout`, or WebSocket upgrades
+through `node:http`, needs `runtime: 'node'`.
+
+HTTPS works through Nest `httpsOptions`. The Bun path accepts `key`, `cert`,
+`ca`, `passphrase`, `requestCert`, `rejectUnauthorized`, and `secureOptions`.
+Other options, such as `pfx`, throw during `NestFactory.create`.
+
+Bun closes connections that stay idle, including slow handlers that have not
+written a byte yet. The adapter sets Bun's `idleTimeout` to its maximum of 255
+seconds and disables it for `@Sse()` streams. Change it with `bun.idleTimeout`
+(`0` disables it):
+
+```ts
+new HonoAdapter({ bun: { idleTimeout: 60 } })
+```
+
+Request size limits are enforced by the adapter on both runtimes. `Bun.serve`
+does not expose `GET` and `HEAD` request bodies, so they are never parsed or
+limited on Bun. `req.on('close')` fires when the client disconnects; on Bun it
+does not fire after a completed response.
+
+Inside Hono handlers on Bun, `c.env` is the `Bun.serve` server, so
+`getConnInfo` from `hono/bun` works. Use `getConnInfo` from
+`@hono/node-server/conninfo` with `runtime: 'node'`.
 
 ## CORS
 
@@ -115,6 +168,32 @@ If multiple request size limits match, the longest matching path wins.
 Malformed JSON and form bodies are rejected as bad requests. Payloads exceeding
 the configured limit are rejected as payload-too-large errors.
 
+## Multipart Limits
+
+Use `multipartLimits` to cap `multipart/form-data` bodies part by part:
+
+```ts
+const adapter = new HonoAdapter({
+	multipartLimits: {
+		fileSize: 5 * 1024 * 1024,
+		files: 3,
+		fields: 20,
+		parts: 25,
+	},
+})
+```
+
+- `fileSize`: maximum bytes of a single file
+- `files`: maximum number of file parts
+- `fields`: maximum number of non-file fields
+- `parts`: maximum number of parts, files and fields combined
+
+The limits are checked while the body streams in, so a request is rejected as
+soon as it crosses a limit, before the rest of the body is read or parsed. A
+violation is rejected as a payload-too-large error, like the body limits, which
+still apply to the whole multipart body. Like `bodyLimit`, multipart limits
+also apply to routes listed in `skipBodyParserFor`.
+
 ## Proxy Trust
 
 Forwarded client IP headers are ignored by default. This prevents direct clients
@@ -180,6 +259,10 @@ export class WebhookController {
 Adapter-provided request fields include `body`, `rawBody`, `params`, `query`,
 `headers`, `ip`, and `baseUrl`.
 
+`req.query` and form bodies are objects without a prototype, so keys such as
+`__proto__`, `constructor`, or `toString` are plain values and cannot shadow
+`Object.prototype` members.
+
 ## Response Support
 
 The adapter supports common Nest controller return values:
@@ -236,6 +319,7 @@ The following Nest response features are intentionally deferred:
 | --- | --- |
 | NestJS controllers and decorators | Supported |
 | Hono node server | Supported |
+| `Bun.serve` on Bun | Supported |
 | JSON, text, form, and multipart bodies | Supported |
 | Raw body for JSON and text | Supported |
 | Controller `Response`, `StreamableFile`, Node stream, and Web stream returns | Supported |

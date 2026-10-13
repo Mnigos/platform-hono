@@ -9,6 +9,8 @@ import {
 	startApp,
 } from './fixtures/minimal-nest-app'
 
+const isBunRuntime = 'Bun' in globalThis
+
 function delay(ms: number) {
 	return new Promise(resolve => setTimeout(resolve, ms))
 }
@@ -80,6 +82,41 @@ function getWithChunkedBody(url: string, chunks: string[]) {
 		for (const chunk of chunks) clientRequest.write(chunk)
 		clientRequest.end()
 	})
+}
+
+async function postWithoutEnd(
+	url: string,
+	headers: Record<string, string>,
+	chunk: string
+) {
+	const abortController = new AbortController()
+	const body = new ReadableStream({
+		start(controller) {
+			controller.enqueue(new TextEncoder().encode(chunk))
+		},
+	})
+	try {
+		const response = await fetch(url, {
+			body,
+			duplex: 'half',
+			headers,
+			method: 'POST',
+			signal: abortController.signal,
+		} as RequestInit & { duplex: 'half' })
+		await response.body?.cancel()
+		return response.status
+	} finally {
+		abortController.abort()
+	}
+}
+
+function createMultipartForm(fileContents: string[], fieldCount = 1) {
+	const formData = new FormData()
+	for (let index = 0; index < fieldCount; index += 1)
+		formData.append(`field${index}`, 'value')
+	for (const [index, content] of fileContents.entries())
+		formData.append('upload', new Blob([content]), `file-${index}.txt`)
+	return formData
 }
 
 describe('minimal Nest integration', () => {
@@ -424,16 +461,54 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
-	test('rejects chunked GET bodies that exceed the global limit', async () => {
-		const app = await startApp(new HonoAdapter({ bodyLimit: 3 }))
+	test.skipIf(isBunRuntime)(
+		'rejects chunked GET bodies that exceed the global limit',
+		async () => {
+			const app = await startApp(new HonoAdapter({ bodyLimit: 3 }))
+
+			try {
+				await expect(
+					getWithChunkedBody(`${app.baseUrl}/hello/42`, ['h', 'i'])
+				).resolves.toBe(200)
+				await expect(
+					getWithChunkedBody(`${app.baseUrl}/hello/42`, ['he', 'll', 'o'])
+				).rejects.toMatchObject({ code: 'ECONNRESET' })
+			} finally {
+				await app.close()
+			}
+		}
+	)
+
+	test('enforces multipart part limits over HTTP', async () => {
+		const app = await startApp(
+			new HonoAdapter({
+				bodyLimit: 2048,
+				multipartLimits: { fields: 2, fileSize: 8, files: 2 },
+			})
+		)
+		const postForm = async (formData: FormData) =>
+			(await fetch(`${app.baseUrl}/echo`, { body: formData, method: 'POST' }))
+				.status
 
 		try {
-			await expect(
-				getWithChunkedBody(`${app.baseUrl}/hello/42`, ['h', 'i'])
-			).resolves.toBe(200)
-			await expect(
-				getWithChunkedBody(`${app.baseUrl}/hello/42`, ['he', 'll', 'o'])
-			).rejects.toMatchObject({ code: 'ECONNRESET' })
+			expect(await postForm(createMultipartForm(['12345678', 'abc'], 2))).toBe(
+				201
+			)
+			expect(await postForm(createMultipartForm(['123456789']))).toBe(413)
+			expect(await postForm(createMultipartForm(['a', 'b', 'c']))).toBe(413)
+			expect(await postForm(createMultipartForm([], 3))).toBe(413)
+
+			const oversizedForm = new FormData()
+			oversizedForm.append('field', 'x'.repeat(4096))
+			expect(await postForm(oversizedForm)).toBe(413)
+
+			expect(
+				await postWithoutEnd(
+					`${app.baseUrl}/echo`,
+					{ 'content-type': 'multipart/form-data; boundary=edge' },
+					`--edge\r\nContent-Disposition: form-data; name="f"; filename="a"\r\n\r\n${'x'.repeat(64)}`
+				)
+			).toBe(413)
 		} finally {
 			await app.close()
 		}
@@ -656,40 +731,43 @@ describe('minimal Nest integration', () => {
 		}
 	})
 
-	test('releases request close listeners on keep-alive sockets after each response', async () => {
-		const app = await startApp()
-		const agent = new Agent({ keepAlive: true, maxSockets: 1 })
-		const sockets: Socket[] = []
-		;(app.adapter.getHttpServer() as Server).on('connection', socket => {
-			sockets.push(socket)
-		})
-		const initialCloseCalls = getRequestCloseCalls()
+	test.skipIf(isBunRuntime)(
+		'releases request close listeners on keep-alive sockets after each response',
+		async () => {
+			const app = await startApp()
+			const agent = new Agent({ keepAlive: true, maxSockets: 1 })
+			const sockets: Socket[] = []
+			;(app.adapter.getHttpServer() as Server).on('connection', socket => {
+				sockets.push(socket)
+			})
+			const initialCloseCalls = getRequestCloseCalls()
 
-		try {
-			await expect(
-				getWithAgent(`${app.baseUrl}/request-close`, agent)
-			).resolves.toBe(200)
-			const [socket] = sockets
-			if (!socket) throw new Error('Expected a server socket')
-			const closeListenerCount = socket.listenerCount('close')
-
-			for (let index = 0; index < 11; index += 1) {
+			try {
 				await expect(
 					getWithAgent(`${app.baseUrl}/request-close`, agent)
 				).resolves.toBe(200)
-			}
-			await delay(10)
+				const [socket] = sockets
+				if (!socket) throw new Error('Expected a server socket')
+				const closeListenerCount = socket.listenerCount('close')
 
-			expect(sockets).toHaveLength(1)
-			expect(socket.listenerCount('close')).toBeLessThanOrEqual(
-				closeListenerCount
-			)
-			expect(getRequestCloseCalls() - initialCloseCalls).toBe(12)
-		} finally {
-			agent.destroy()
-			await app.close()
+				for (let index = 0; index < 11; index += 1) {
+					await expect(
+						getWithAgent(`${app.baseUrl}/request-close`, agent)
+					).resolves.toBe(200)
+				}
+				await delay(10)
+
+				expect(sockets).toHaveLength(1)
+				expect(socket.listenerCount('close')).toBeLessThanOrEqual(
+					closeListenerCount
+				)
+				expect(getRequestCloseCalls() - initialCloseCalls).toBe(12)
+			} finally {
+				agent.destroy()
+				await app.close()
+			}
 		}
-	})
+	)
 
 	test('tears down GET SSE streams used for HEAD fallback', async () => {
 		const app = await startApp()

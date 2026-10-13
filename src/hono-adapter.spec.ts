@@ -1,5 +1,5 @@
 import { EventEmitter } from 'node:events'
-import type { Server } from 'node:http'
+import { Server } from 'node:http'
 import type { Server as HttpsServer } from 'node:https'
 import { PassThrough } from 'node:stream'
 import { serveStatic } from '@hono/node-server/serve-static'
@@ -26,6 +26,7 @@ beforeEach(() => {
 
 afterEach(() => {
 	vi.restoreAllMocks()
+	vi.unstubAllGlobals()
 })
 
 function createInitializedAdapter(
@@ -1084,6 +1085,31 @@ describe('HonoAdapter', () => {
 		expect(query).toEqual({ tag: ['one', 'two'] })
 	})
 
+	test('builds the query object without a prototype', async () => {
+		const adapter = createInitializedAdapter()
+		let query: NestHonoRequest['query']
+
+		adapter.get('/query', (req, ctx) => {
+			query = getNestHonoRequest(req).query
+			adapter.reply(ctx, 'ok')
+		})
+
+		await adapter.hono.request(
+			'/query?__proto__=polluted&toString=shadowed&constructor=value&tag=one&tag=two&empty'
+		)
+
+		expect(Object.getPrototypeOf(query)).toBeNull()
+		expect(Object.getPrototypeOf({})).toBe(Object.prototype)
+		expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+		expect({ ...(query as Record<string, unknown>) }).toEqual({
+			['__proto__']: 'polluted',
+			constructor: 'value',
+			empty: '',
+			tag: ['one', 'two'],
+			toString: 'shadowed',
+		})
+	})
+
 	test('returns delayed Nest middleware replies without next calls', async () => {
 		const adapter = new HonoAdapter()
 		const getFactory = await adapter.createMiddlewareFactory(RequestMethod.GET)
@@ -1238,5 +1264,71 @@ describe('HonoAdapter', () => {
 			(httpsAdapter.getHttpServer() as HttpsServer & { requestCert: boolean })
 				.requestCert
 		).toBe(true)
+	})
+
+	test('serves through Bun.serve when the Bun runtime is selected', () => {
+		const serve = vi.fn(() => ({ hostname: 'localhost', port: 3000 }))
+		vi.stubGlobal('Bun', { serve })
+		const adapter = new HonoAdapter({ bun: { idleTimeout: 30 } })
+		adapter.initHttpServer({})
+
+		expect(adapter.listen(3000)).toBe(adapter.getHttpServer())
+		expect(adapter.getHttpServer()).not.toBeInstanceOf(Server)
+		expect(serve).toHaveBeenCalledWith(
+			expect.objectContaining({
+				fetch: adapter.hono.fetch,
+				idleTimeout: 30,
+				port: 3000,
+			})
+		)
+	})
+
+	test('keeps @hono/node-server when runtime node is forced on Bun', () => {
+		vi.stubGlobal('Bun', { serve: vi.fn() })
+		const adapter = new HonoAdapter({ runtime: 'node' })
+		adapter.initHttpServer({})
+
+		expect(adapter.getHttpServer()).toBeInstanceOf(Server)
+	})
+
+	test('rejects runtime bun outside Bun and unsupported Bun TLS options', () => {
+		vi.stubGlobal('Bun', undefined)
+		expect(() =>
+			new HonoAdapter({ runtime: 'bun' }).initHttpServer({})
+		).toThrow("HonoAdapter runtime 'bun' requires the Bun runtime")
+
+		vi.stubGlobal('Bun', { serve: vi.fn() })
+		expect(() =>
+			new HonoAdapter().initHttpServer({
+				httpsOptions: { pfx: Buffer.from('pfx') },
+			})
+		).toThrow("HonoAdapter runtime 'bun' does not support httpsOptions: pfx")
+	})
+
+	test('reads the client IP from Bun and disables its idle timeout for SSE', async () => {
+		const adapter = createInitializedAdapter()
+		const bunServer = {
+			requestIP: vi.fn(() => ({ address: '127.0.0.1' })),
+			timeout: vi.fn(),
+		}
+		let clientIp: unknown
+
+		adapter.get('/events', (req, ctx) => {
+			clientIp = getNestHonoRequest(req).ip
+			const stream = (
+				ctx as Context & {
+					raw: PassThrough & {
+						writeHead: (statusCode: number) => PassThrough
+					}
+				}
+			).raw
+			stream.writeHead(200).end('data: ok\n\n')
+		})
+
+		const response = await adapter.hono.request('/events', {}, bunServer)
+
+		await expect(response.text()).resolves.toBe('data: ok\n\n')
+		expect(clientIp).toBe('127.0.0.1')
+		expect(bunServer.timeout).toHaveBeenCalledWith(expect.any(Request), 0)
 	})
 })
