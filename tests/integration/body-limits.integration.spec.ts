@@ -661,4 +661,31 @@ describe('body stream integration', () => {
 			await app.close()
 		}
 	})
+
+	test.each([
+		['an escaped quoted boundary', '"\\x"', 'x'],
+		['an embedded escaped quote', '"a\\"b"', 'a"b'],
+	])('rejects %s before reading a skipped multipart route', async (_label, boundaryParameter, delimiter) => {
+		const app = await startApp(
+			new HonoAdapter({
+				multipartLimits: { fileSize: 1, files: 0 },
+				skipBodyParserFor: ['/raw-upload'],
+			})
+		)
+		try {
+			const response = await fetch(`${app.baseUrl}/raw-upload`, {
+				body: `--${delimiter}\r\nContent-Disposition: form-data; name="f"; filename="a.txt"\r\n\r\n0123456789\r\n--${delimiter}--\r\n`,
+				headers: {
+					'content-type': `multipart/form-data; boundary=${boundaryParameter}`,
+				},
+				method: 'POST',
+			})
+			expect(response.status).toBe(400)
+			await expect(response.json()).resolves.toMatchObject({
+				message: 'Malformed request body',
+			})
+		} finally {
+			await app.close()
+		}
+	})
 })

@@ -5,7 +5,8 @@ import { classifyMultipartPart } from './multipart-part'
 type ScannerState = 'body' | 'done' | 'headers' | 'preamble'
 
 const BOUNDARY_PARAMETER_REGEX = /boundary\s*=/gi
-const BOUNDARY_VALUE_REGEX = /^\s*(?:"([^"]*)"|([^;\s]+))/
+const BOUNDARY_TOKEN_REGEX = /^[^;\s]+/
+const BOUNDARY_END_REGEX = /^\s*(?:;|$)/
 const HEADER_END = Buffer.from('\r\n\r\n')
 const CR = 13
 const LF = 10
@@ -213,7 +214,10 @@ function hasMultipartLimits(
 /**
  * Reads the multipart boundary. A `Content-Type` that mentions `boundary=`
  * more than once is rejected, because Bun picks the first `boundary=`
- * substring while undici reads the `boundary` parameter.
+ * substring while undici reads the `boundary` parameter. Quoted boundaries
+ * with a backslash or an embedded quote are rejected too: undici unescapes
+ * them as an RFC 7230 quoted-string while Bun reads them differently, so the
+ * delimiter would be ambiguous.
  */
 function getBoundary(contentType: string) {
 	const matches = [...contentType.matchAll(BOUNDARY_PARAMETER_REGEX)]
@@ -221,10 +225,23 @@ function getBoundary(contentType: string) {
 		throw new BadRequestException('Malformed request body')
 	const [match] = matches
 	if (match?.index === undefined) return
-	const value = contentType
-		.slice(match.index + match[0].length)
-		.match(BOUNDARY_VALUE_REGEX)
-	return value?.[1] || value?.[2] || undefined
+	const rawValue = contentType.slice(match.index + match[0].length).trimStart()
+	if (!rawValue.startsWith('"')) {
+		const token = rawValue.match(BOUNDARY_TOKEN_REGEX)?.[0]
+		if (token?.includes('"') || token?.includes('\\'))
+			throw new BadRequestException('Malformed request body')
+		return token || undefined
+	}
+	const closingQuote = rawValue.indexOf('"', 1)
+	const quoted = rawValue.slice(1, closingQuote)
+	const rest = rawValue.slice(closingQuote + 1)
+	if (
+		closingQuote === -1 ||
+		quoted.includes('\\') ||
+		!BOUNDARY_END_REGEX.test(rest)
+	)
+		throw new BadRequestException('Malformed request body')
+	return quoted || undefined
 }
 
 /**

@@ -13,12 +13,27 @@ interface NestQueryCarrier {
 /**
  * Builds Express-style `req.query` on an object without a prototype, so keys
  * such as `__proto__` or `toString` cannot shadow `Object.prototype` members.
+ * It reads the raw URL with `URLSearchParams` instead of Hono's `queries()`,
+ * whose result is a plain object on older Hono versions and drops `__proto__`.
+ * A repeated key becomes an array; keys without a name are skipped, like Hono.
  */
 function createQuery(request: HonoRequest) {
 	const query: Record<string, string | string[]> = Object.create(null)
-	if (!request.url.includes('?')) return query
-	for (const [key, values] of Object.entries(request.queries()))
-		query[key] = values.length > 1 ? values : (values[0] ?? '')
+	const { url } = request
+	const searchStart = url.indexOf('?')
+	if (searchStart === -1) return query
+	const hashStart = url.indexOf('#', searchStart)
+	const search = url.slice(
+		searchStart + 1,
+		hashStart === -1 ? undefined : hashStart
+	)
+	for (const [key, value] of new URLSearchParams(search)) {
+		if (key === '') continue
+		const current = query[key]
+		if (current === undefined) query[key] = value
+		else if (Array.isArray(current)) current.push(value)
+		else query[key] = [current, value]
+	}
 	return query
 }
 

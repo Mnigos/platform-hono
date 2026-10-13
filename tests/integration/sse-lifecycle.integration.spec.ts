@@ -1,3 +1,5 @@
+import 'reflect-metadata'
+import { SseStream } from '@nestjs/core/router/sse-stream'
 import type { Context } from 'hono'
 import { HonoAdapter } from '../../src'
 import { getRequestState } from '../../src/request/request-state'
@@ -12,30 +14,47 @@ interface CloseRequest {
 	on: (event: 'close', listener: () => void) => unknown
 }
 
+/**
+ * Nest 11.0.0's `SseStream.pipe()` always writes status 200; later versions
+ * defer the head to `commitHeaders()` and honor `@HttpCode()`.
+ */
+const nestSseHonorsHttpCode =
+	typeof (SseStream.prototype as { commitHeaders?: unknown }).commitHeaders ===
+	'function'
+
+async function expectSseStatus(path: string, method: string, status: number) {
+	const app = await startApp()
+	try {
+		const response = await fetch(`${app.baseUrl}${path}`, { method })
+		expect(response.status).toBe(status)
+		if (method === 'HEAD') await expect(response.text()).resolves.toBe('')
+		else {
+			expect(response.headers.get('content-type')).toContain(
+				'text/event-stream'
+			)
+			const body = await response.text()
+			expect(body).toContain('data: {"hello":"one"}')
+			expect(body).toContain('data: two')
+		}
+	} finally {
+		await app.close()
+	}
+}
+
 describe('SSE lifecycle integration', () => {
 	test.each([
-		['/events/accepted', 'GET', 202],
-		['/events/accepted', 'HEAD', 202],
-		['/events', 'GET', 200],
-		['/events', 'HEAD', 200],
-	] as const)('preserves the SSE status for %s on %s', async (path, method, status) => {
-		const app = await startApp()
-		try {
-			const response = await fetch(`${app.baseUrl}${path}`, { method })
-			expect(response.status).toBe(status)
-			if (method === 'HEAD') await expect(response.text()).resolves.toBe('')
-			else {
-				expect(response.headers.get('content-type')).toContain(
-					'text/event-stream'
-				)
-				const body = await response.text()
-				expect(body).toContain('data: {"hello":"one"}')
-				expect(body).toContain('data: two')
-			}
-		} finally {
-			await app.close()
-		}
-	})
+		['/events', 'GET'],
+		['/events', 'HEAD'],
+	] as const)('preserves the default SSE status for %s on %s', (path, method) =>
+		expectSseStatus(path, method, 200))
+
+	test.runIf(nestSseHonorsHttpCode).each([
+		['/events/accepted', 'GET'],
+		['/events/accepted', 'HEAD'],
+	] as const)(
+		'preserves the @HttpCode() SSE status for %s on %s (needs SseStream.commitHeaders(); Nest 11.0.0 always writes 200)',
+		(path, method) => expectSseStatus(path, method, 202)
+	)
 
 	test('fires each close listener once on client abort, including listeners registered later', async () => {
 		const adapter = new HonoAdapter()
