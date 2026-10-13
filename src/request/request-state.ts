@@ -216,14 +216,6 @@ export function getUrlPathname(url: string) {
 	return url.slice(start, end)
 }
 
-function createQuery(ctx: Context) {
-	const query: Record<string, string | string[]> = Object.create(null)
-	if (!ctx.req.url.includes('?')) return query
-	for (const [key, values] of Object.entries(ctx.req.queries()))
-		query[key] = values.length > 1 ? values : (values[0] ?? '')
-	return query
-}
-
 /**
  * Recomputes request metadata after middleware replaced `ctx.req.raw`, for
  * example to rewrite the URL. The original transport request stays in
@@ -255,8 +247,9 @@ export function syncRawRequest(state: RequestState) {
 
 /**
  * Returns the request state, creating it on first use. Request fields Nest
- * reads (`headers`, `ip`, `query`, `baseUrl`, `on`) are attached once; `ip`
- * and `headers` are computed only when read.
+ * reads (`headers`, `ip`, `baseUrl`, `on`) are attached once; `ip` and
+ * `headers` are computed only when read. `query` lives on the Nest request
+ * view (`getNestRequest`), so Hono's `ctx.req.query()` is never shadowed.
  */
 export function getRequestState(ctx: Context, options: HonoAdapterOptions) {
 	const req = getNestHonoRequest(ctx.req) as NestHonoRequest &
@@ -289,8 +282,6 @@ export function getRequestState(ctx: Context, options: HonoAdapterOptions) {
 		getResponseHeaders(ctx)
 	if (state.incoming?.socket && !req.socket)
 		Object.defineProperty(req, 'socket', SOCKET_ACCESSOR)
-	if (typeof req.query === 'function' || !req.query)
-		req.query = createQuery(ctx)
 	req.baseUrl = state.pathname
 	req.on = state.on
 	syncRawRequest(state)

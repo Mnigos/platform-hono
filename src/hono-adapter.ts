@@ -31,6 +31,7 @@ import {
 import type { HonoAdapterOptions } from './options'
 import { createBodyLimitMiddleware } from './request/body-limit-middleware'
 import { createParserMiddleware } from './request/body-parser-middleware'
+import { getNestRequest } from './request/nest-request'
 import { getRequestState } from './request/request-state'
 import { type RouteArguments, RouteRegistry } from './routing/route-registry'
 import { createServer, type HonoHttpServer } from './server/create-server'
@@ -189,7 +190,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		handler: (err: Error, req: Request, res: Context) => void | Promise<void>
 	) {
 		this.hono.onError(async (err, ctx) => {
-			await handler(err, ctx.req as unknown as Request, ctx)
+			await handler(err, getNestRequest(ctx.req) as unknown as Request, ctx)
 			return getFinalizedResponse(ctx)
 		})
 	}
@@ -198,7 +199,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		handler: (req: Request, res: Context) => void | Promise<void>
 	) {
 		this.hono.notFound(async ctx => {
-			await handler(ctx.req as unknown as Request, ctx)
+			await handler(getNestRequest(ctx.req) as unknown as Request, ctx)
 			if (!ctx.finalized) {
 				this.status(ctx, HttpStatus.NOT_FOUND)
 				return getFinalizedResponse(ctx, 'Not Found')

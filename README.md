@@ -283,6 +283,29 @@ read the body.
 `__proto__`, `constructor`, or `toString` are plain values and cannot shadow
 `Object.prototype` members.
 
+Nest middleware, guards, and handlers receive a view over Hono's request:
+`req.query` there is the parsed object Nest expects, and every other field
+and Hono method reads through to `ctx.req`. Hono's own `ctx.req` keeps its
+`query()`, `queries()`, `param()`, and `header()` methods, so Hono apps mounted
+on the adapter instance, such as `@bull-board/hono`, work alongside Nest:
+
+```ts
+const hono = app.getHttpAdapter().getInstance()
+hono.route('/admin/queues', serverAdapter.registerPlugin())
+```
+
+## Trailing Slashes
+
+The adapter's Hono instance uses Hono's default strict routing, like Nest's
+Fastify adapter: `/users/42/` does not match `/users/:id` (Nest's Express
+adapter matches both). The same applies to Hono apps mounted with
+`hono.route()`: `@bull-board/hono` serves its UI at `/admin/queues`, not
+`/admin/queues/`. Redirect the trailing-slash path if clients use it:
+
+```ts
+hono.get('/admin/queues/', ctx => ctx.redirect('/admin/queues'))
+```
+
 ## Response Support
 
 The adapter supports common Nest controller return values:
