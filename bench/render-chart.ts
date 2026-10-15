@@ -177,7 +177,7 @@ function getMeasurements(runtime: Runtime) {
 		const value = runtime.requestsPerSecond[adapter]
 
 		return value === undefined ? [] : [{ adapter, value }]
-	})
+	}).toSorted((first, second) => second.value - first.value)
 }
 
 const getLastBarBottom = (layout: RuntimeLayout) =>
