@@ -1,11 +1,32 @@
 # @mnigos/platform-hono
 
-NestJS HTTP adapter for Hono.
+NestJS HTTP adapter for Hono. Supports Bun and Node.js, and runs `rigtch.fm` in
+production.
 
-This package provides the extracted Hono adapter used by `rigtch.fm`. It is
-designed for Bun-first NestJS applications, serves with `Bun.serve` on Bun and
-`@hono/node-server` on Node.js, and keeps the adapter surface small:
-`HonoAdapter`, `HonoAdapterOptions`, and the `NestHonoRequest` request type.
+<!-- benchmark-chart:start -->
+
+<picture>
+	<source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
+	<img alt="Bar chart of NestJS requests per second for GET /, higher is better. Bun: platform-hono 117,870, platform-fastify 106,651, platform-express 87,378. Node.js: platform-hono 90,645, platform-fastify 102,148, platform-express 66,201." src="assets/benchmark-light.svg" width="640">
+</picture>
+
+<!-- benchmark-chart:end -->
+
+On Bun, platform-hono runs NestJS faster than `@nestjs/platform-fastify` and
+`@nestjs/platform-express`. On Node.js it beats platform-express and is about
+11% behind platform-fastify. In the same benchmark, version 0.4.0 serves `GET /`
+about 4.3x faster than 0.3.0 on Bun and 2.8x faster on Node.js.
+
+<!-- benchmark-table:start -->
+
+| Runtime | platform-hono | vs platform-fastify | vs platform-express |
+| --- | ---: | ---: | ---: |
+| Bun | 117,870 req/s | +11% | +35% |
+| Node.js | 90,645 req/s | −11% | +37% |
+
+Requests per second for `GET /` on Apple M4 with NestJS 11.2.7 and `wrk -t4 -c100` after a 3 s warmup, following the [NestJS benchmark methodology](https://github.com/nestjs/nest/pull/18063). To measure the adapter on your machine, see [bench/README.md](bench/README.md).
+
+<!-- benchmark-table:end -->
 
 ## Installation
 
