@@ -1,0 +1,28 @@
+{
+  "route": "GET /",
+  "setup": {
+    "machine": "Apple M4",
+    "nest": "11.2.7",
+    "load": "wrk -t4 -c100",
+    "warmupSeconds": 3,
+    "methodology": "https://github.com/nestjs/nest/pull/18063"
+  },
+  "runtimes": [
+    {
+      "name": "Bun",
+      "requestsPerSecond": {
+        "platform-hono": 117870,
+        "platform-fastify": 106651,
+        "platform-express": 87378
+      }
+    },
+    {
+      "name": "Node.js",
+      "requestsPerSecond": {
+        "platform-hono": 90645,
+        "platform-fastify": 102148,
+        "platform-express": 66201
+      }
+    }
+  ]
+}
