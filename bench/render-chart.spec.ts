@@ -72,6 +72,27 @@ describe('benchmark chart', () => {
 		)
 	})
 
+	test('orders the bars of each runtime from fastest to slowest', () => {
+		const svg = renderChartSvg(unreleasedResults, 'light')
+		const labels = Array.from(
+			svg.matchAll(/<text class="(label(?: hl)?)"[^>]*>([^<]+)<\/text>/g),
+			([, className, label]) => `${className}: ${label}`
+		)
+
+		expect(labels).toEqual([
+			'label hl: platform-hono',
+			'label: platform-fastify',
+			'label: platform-express',
+			'label: platform-node (unreleased)',
+			'label: platform-fastify',
+			'label hl: platform-hono',
+			'label: platform-express',
+		])
+		expect(svg).toContain(
+			'Node.js: platform-node (unreleased) 110,000, platform-fastify 100,000, platform-hono 90,000, platform-express 60,000.'
+		)
+	})
+
 	test('compares against an unreleased adapter only where it was measured', () => {
 		const readme = renderReadme(README_BLOCKS, unreleasedResults)
 

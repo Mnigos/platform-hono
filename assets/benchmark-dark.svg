@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="640" height="396" viewBox="0 0 640 396" role="img" aria-labelledby="title desc">
 <title id="title">NestJS requests per second for GET /</title>
-<desc id="desc">Bar chart of NestJS requests per second for GET /, higher is better. Bun: platform-hono 117,870, platform-fastify 106,651, platform-express 87,378. Node.js: platform-hono 90,645, platform-fastify 102,148, platform-express 66,201, platform-node (unreleased) 110,690. Apple M4 · wrk -t4 -c100, 3 s warmup · NestJS 11.2.7. platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Node.js only.</desc>
+<desc id="desc">Bar chart of NestJS requests per second for GET /, higher is better. Bun: platform-hono 117,870, platform-fastify 106,651, platform-express 87,378. Node.js: platform-node (unreleased) 110,690, platform-fastify 102,148, platform-hono 90,645, platform-express 66,201. Apple M4 · wrk -t4 -c100, 3 s warmup · NestJS 11.2.7. platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Node.js only.</desc>
 <style>text{font:16px -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;fill:#9198a1}
 .strong,text.hl{fill:#f0f6fc;font-weight:600}
 .muted{font-weight:400}
@@ -31,18 +31,18 @@
 <g style="--bar-delay:150ms;--value-delay:1050ms">
 <text class="strong" x="0" y="198">Node.js</text>
 <path class="axis" d="M223.5 206V332"/>
-<text class="label hl" x="212" y="226.5">platform-hono</text>
-<path class="bar hl" d="M224 210H490.7a4 4 0 0 1 4 4v14a4 4 0 0 1 -4 4H224Z"/>
-<text class="value hl" x="502.7" y="226.5">90.6k</text>
+<text class="label" x="212" y="226.5">platform-node (unreleased)</text>
+<path class="bar" d="M224 210H550.6a4 4 0 0 1 4 4v14a4 4 0 0 1 -4 4H224Z"/>
+<text class="value" x="562.6" y="226.5">110.7k</text>
 <text class="label" x="212" y="258.5">platform-fastify</text>
 <path class="bar" d="M224 242H525a4 4 0 0 1 4 4v14a4 4 0 0 1 -4 4H224Z"/>
 <text class="value" x="537" y="258.5">102.1k</text>
-<text class="label" x="212" y="290.5">platform-express</text>
-<path class="bar" d="M224 274H417.7a4 4 0 0 1 4 4v14a4 4 0 0 1 -4 4H224Z"/>
-<text class="value" x="429.7" y="290.5">66.2k</text>
-<text class="label" x="212" y="322.5">platform-node (unreleased)</text>
-<path class="bar" d="M224 306H550.6a4 4 0 0 1 4 4v14a4 4 0 0 1 -4 4H224Z"/>
-<text class="value" x="562.6" y="322.5">110.7k</text>
+<text class="label hl" x="212" y="290.5">platform-hono</text>
+<path class="bar hl" d="M224 274H490.7a4 4 0 0 1 4 4v14a4 4 0 0 1 -4 4H224Z"/>
+<text class="value hl" x="502.7" y="290.5">90.6k</text>
+<text class="label" x="212" y="322.5">platform-express</text>
+<path class="bar" d="M224 306H417.7a4 4 0 0 1 4 4v14a4 4 0 0 1 -4 4H224Z"/>
+<text class="value" x="429.7" y="322.5">66.2k</text>
 </g>
 <text class="note" x="0" y="368">Apple M4 · wrk -t4 -c100, 3 s warmup · NestJS 11.2.7</text>
 <text class="note" x="0" y="386">platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Node.js only</text>
