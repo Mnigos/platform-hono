@@ -26,5 +26,7 @@ apps. After a new measurement, update it and regenerate the chart SVGs in
 bun bench/chart.ts
 ```
 
-`bun run test` fails while the chart or README is out of date with
-`results.json`.
+Adapters listed under `unreleased`, such as `platform-node` from
+nestjs/nest#18063, are labelled as unreleased with their own NestJS version and
+only appear for the runtimes that have a measurement. `bun run test` fails while
+the chart or README is out of date with `results.json`.
