@@ -7,6 +7,14 @@
     "warmupSeconds": 3,
     "methodology": "https://github.com/nestjs/nest/pull/18063"
   },
+  "unreleased": [
+    {
+      "adapter": "platform-node",
+      "nest": "12.1.2",
+      "source": "nestjs/nest#18063",
+      "sourceUrl": "https://github.com/nestjs/nest/pull/18063"
+    }
+  ],
   "runtimes": [
     {
       "name": "Bun",
@@ -21,7 +29,8 @@
       "requestsPerSecond": {
         "platform-hono": 90645,
         "platform-fastify": 102148,
-        "platform-express": 66201
+        "platform-express": 66201,
+        "platform-node": 110690
       }
     }
   ]
