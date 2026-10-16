@@ -8,7 +8,6 @@ import {
 } from '@nestjs/common'
 import { AbstractHttpAdapter } from '@nestjs/core'
 import { type Context, Hono } from 'hono'
-import { createBodyLimit, parseBodyLimit } from './helpers/body-parser'
 import { createCorsMiddleware, type NestCorsOptions } from './helpers/cors'
 import {
 	createShutdownMiddleware,
@@ -30,39 +29,32 @@ import {
 } from './helpers/static-assets'
 import type { HonoAdapterOptions } from './options'
 import { createBodyLimitMiddleware } from './request/body-limit-middleware'
-import { createParserMiddleware } from './request/body-parser-middleware'
 import { getNestRequest } from './request/nest-request'
+import { ParserRegistry } from './request/parser-registry'
 import { getRequestState } from './request/request-state'
 import { type RouteArguments, RouteRegistry } from './routing/route-registry'
 import { createServer, type HonoHttpServer } from './server/create-server'
 
 type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
 
-const DEFAULT_PARSER_TYPES = [
-	'urlencoded',
-	'json',
-	'text',
-	'multipart/form-data',
-] as const
-
 export class HonoAdapter extends AbstractHttpAdapter<
 	HonoHttpServer,
 	Context['req'],
 	Context
 > {
-	private readonly registeredParserTypes = new Set<string>()
-	private batchedParserTypes?: string[]
 	private readonly adapterOptions: HonoAdapterOptions
 	private readonly logger = new Logger('HonoAdapter')
 	private forceCloseConnections = false
 	private isShuttingDown = false
 	private readonly securityHooks: SecurityRequestHook[] = []
 	private readonly routes: RouteRegistry
+	private readonly parsers: ParserRegistry
 
 	constructor(options: HonoAdapterOptions = {}) {
 		super(new Hono())
 		this.adapterOptions = options
 		this.routes = new RouteRegistry(this.hono, options)
+		this.parsers = new ParserRegistry(this.hono, options, this.logger)
 		this.hono.use((ctx, next) => {
 			getRequestState(ctx, this.adapterOptions)
 			if (this.securityHooks.length > 0)
@@ -76,7 +68,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	get isParserRegistered() {
-		return this.registeredParserTypes.size > 0
+		return this.parsers.isRegistered
 	}
 
 	override all(...args: RouteArguments) {
@@ -265,29 +257,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		rawBody: boolean,
 		options?: number | { limit?: number | string }
 	) {
-		const configuredLimit = parseBodyLimit(
-			typeof options === 'number' ? options : options?.limit
-		)
-		this.logger.log(
-			`Registering body parser middleware for type: ${type}${configuredLimit === undefined ? '' : ` | bodyLimit: ${configuredLimit}`}`
-		)
-		this.registeredParserTypes.add(type)
-		if (configuredLimit === undefined && this.batchedParserTypes) {
-			this.batchedParserTypes.push(type)
-			return
-		}
-		const parse = createParserMiddleware({
-			adapterOptions: this.adapterOptions,
-			parserTypes: [type],
-			rawBody,
-		})
-		const bodyLimit =
-			configuredLimit === undefined
-				? undefined
-				: createBodyLimit(configuredLimit, type)
-		this.hono.use(
-			bodyLimit ? (ctx, next) => bodyLimit(ctx, () => parse(ctx, next)) : parse
-		)
+		this.parsers.register(type, rawBody, options)
 	}
 
 	close(): Promise<void> {
@@ -359,24 +329,9 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	}
 
 	private createDefaultParserMiddleware(rawBody: boolean) {
-		const missingTypes = DEFAULT_PARSER_TYPES.filter(
-			type => !this.registeredParserTypes.has(type)
+		return this.parsers.createDefaultParser(rawBody, type =>
+			this.useBodyParser(type, rawBody)
 		)
-		if (missingTypes.length === 0) return
-		this.logger.log('Registering parser middleware')
-		const parserTypes: string[] = []
-		this.batchedParserTypes = parserTypes
-		try {
-			for (const type of missingTypes) this.useBodyParser(type, rawBody)
-		} finally {
-			this.batchedParserTypes = undefined
-		}
-		if (parserTypes.length === 0) return
-		return createParserMiddleware({
-			adapterOptions: this.adapterOptions,
-			parserTypes,
-			rawBody,
-		})
 	}
 
 	createMiddlewareFactory(requestMethod: RequestMethod) {
