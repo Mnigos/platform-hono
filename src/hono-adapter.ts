@@ -13,7 +13,6 @@ import {
 	createShutdownMiddleware,
 	installNest12Members,
 	type Nest12ApplicationOptions,
-	runSecurityHooks,
 	type SecurityRequestHook,
 } from './helpers/nest-12'
 import { getRequestHostname, getRequestPathWithSearch } from './helpers/request'
@@ -31,9 +30,11 @@ import type { HonoAdapterOptions } from './options'
 import { createBodyLimitMiddleware } from './request/body-limit-middleware'
 import { getNestRequest } from './request/nest-request'
 import { ParserRegistry } from './request/parser-registry'
+import { createRequestLayer } from './request/request-layer'
 import { getRequestState } from './request/request-state'
 import { type RouteArguments, RouteRegistry } from './routing/route-registry'
 import { createServer, type HonoHttpServer } from './server/create-server'
+import { createNodeFastPath, type NodeFastPath } from './server/node-fast-path'
 
 type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
 
@@ -49,17 +50,21 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	private readonly securityHooks: SecurityRequestHook[] = []
 	private readonly routes: RouteRegistry
 	private readonly parsers: ParserRegistry
+	private readonly fastPath?: NodeFastPath
 
 	constructor(options: HonoAdapterOptions = {}) {
 		super(new Hono())
 		this.adapterOptions = options
 		this.routes = new RouteRegistry(this.hono, options)
 		this.parsers = new ParserRegistry(this.hono, options, this.logger)
-		this.hono.use((ctx, next) => {
-			getRequestState(ctx, this.adapterOptions)
-			if (this.securityHooks.length > 0)
-				runSecurityHooks(ctx, getNestRequest(ctx.req), this.securityHooks)
-			return next()
+		const requestLayer = createRequestLayer(options, this.securityHooks)
+		this.hono.use(requestLayer)
+		this.fastPath = createNodeFastPath({
+			adapterOptions: options,
+			hono: this.hono,
+			requestLayer,
+			routes: this.routes,
+			securityHooks: this.securityHooks,
 		})
 	}
 
@@ -285,7 +290,12 @@ export class HonoAdapter extends AbstractHttpAdapter<
 			})
 		)
 
-		this.httpServer = createServer(this.hono, options, this.adapterOptions)
+		this.httpServer = createServer(
+			this.hono,
+			options,
+			this.adapterOptions,
+			this.fastPath
+		)
 	}
 
 	getType() {
