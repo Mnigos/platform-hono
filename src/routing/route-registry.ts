@@ -4,7 +4,12 @@ import type { Context, Hono, MiddlewareHandler } from 'hono'
 import type { HonoAdapterOptions } from '../options'
 import { getRequestState, syncRawRequest } from '../request/request-state'
 import { setRouteParams } from '../request/route-params'
-import { createRouteHandler, invokeHandler, runHandlers } from './route-invoker'
+import {
+	createRouteHandler,
+	invokeHandler,
+	type RouteHandlerOptions,
+	runHandlers,
+} from './route-invoker'
 import {
 	getOptionalParameterSuffixes,
 	normalizeHonoMiddlewarePath,
@@ -59,6 +64,7 @@ function getRouteAndHandler(
  */
 export class RouteRegistry {
 	private readonly headRouteHandlers = new Map<string, MiddlewareHandler[]>()
+	private readonly getRoutes = new WeakMap<Function, RouteHandlerOptions>()
 	private readonly triedHeadRoutes = new WeakMap<Context, Set<string>>()
 	private readonly adapterOptions: HonoAdapterOptions
 	private readonly hono: Hono
@@ -74,12 +80,13 @@ export class RouteRegistry {
 		handler?: RouteHandler
 	) {
 		const [routePath, routeHandler] = getRouteAndHandler(pathOrHandler, handler)
-		const wrappedHandler = createRouteHandler({
+		const routeOptions: RouteHandlerOptions = {
 			adapterOptions: this.adapterOptions,
 			optionalParameterSuffixes: getOptionalParameterSuffixes(routePath),
 			routeHandler: routeHandler as RequestHandler,
 			waitForNext: method === 'use',
-		})
+		}
+		const wrappedHandler = createRouteHandler(routeOptions)
 
 		if (method === 'use' && typeof pathOrHandler === 'function') {
 			this.hono.use(wrappedHandler)
@@ -95,6 +102,7 @@ export class RouteRegistry {
 
 		for (const honoPath of new Set(normalizeHonoPaths(routePath))) {
 			if (method === 'all') {
+				this.getRoutes.set(wrappedHandler, routeOptions)
 				this.hono.all(honoPath, wrappedHandler)
 				continue
 			}
@@ -125,8 +133,19 @@ export class RouteRegistry {
 								: wrappedHandler(ctx, next)
 						}
 					: wrappedHandler
+			if (method === 'get') this.getRoutes.set(handlerForMethod, routeOptions)
 			this.hono.on(method.toUpperCase(), honoPath, handlerForMethod)
 		}
+	}
+
+	/**
+	 * The Nest route a registered Hono handler runs for a `GET` request, when
+	 * the handler is a Nest `GET` or `ALL` route.
+	 */
+	getRouteForGet(handler: unknown) {
+		return typeof handler === 'function'
+			? this.getRoutes.get(handler)
+			: undefined
 	}
 
 	registerMiddleware(

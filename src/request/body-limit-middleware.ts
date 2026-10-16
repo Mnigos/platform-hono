@@ -12,6 +12,16 @@ interface BodyLimitMiddlewareOptions {
 	parse?: MiddlewareHandler
 }
 
+const bodyLimitLayers = new WeakSet<Function>()
+
+/**
+ * Whether a Hono handler is a body layer from `createBodyLimitMiddleware()`.
+ * For a request without body headers it only passes on to `next()`.
+ */
+export function isBodyLimitLayer(handler: unknown) {
+	return typeof handler === 'function' && bodyLimitLayers.has(handler)
+}
+
 /**
  * Creates the first adapter middleware: it sets up request state, enforces the
  * body limits, and then runs the default body parsers in the same Hono layer,
@@ -24,7 +34,7 @@ export function createBodyLimitMiddleware({
 	const proceed: MiddlewareHandler =
 		parse ?? ((_ctx: Context, next: Next) => next())
 
-	return (ctx, next) => {
+	const layer: MiddlewareHandler = (ctx, next) => {
 		const state = getRequestState(ctx, adapterOptions)
 		syncRawRequest(state)
 		if (!mayHaveRequestBody(state)) return proceed(ctx, next)
@@ -39,4 +49,6 @@ export function createBodyLimitMiddleware({
 			return proceed(ctx, next)
 		})
 	}
+	bodyLimitLayers.add(layer)
+	return layer
 }
