@@ -7,27 +7,27 @@ production.
 
 <picture>
 	<source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
-	<img alt="Bar chart of NestJS requests per second for GET /, higher is better. Bun: platform-hono 117,870, platform-fastify 106,651, platform-express 87,378. Node.js: platform-node (unreleased) 110,690, platform-fastify 102,148, platform-hono 90,645, platform-express 66,201. Apple M4 · wrk -t4 -c100, 3 s warmup · NestJS 11.2.7. platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Node.js only." src="assets/benchmark-light.svg" width="640">
+	<img alt="Bar chart of NestJS requests per second for GET /, higher is better. Bun: platform-hono 140,247, platform-node (unreleased) 121,062, platform-fastify 105,053, platform-express 88,305. Node.js: platform-node (unreleased) 109,965, platform-fastify 103,645, platform-hono 100,424, platform-express 67,547. Apple M4 · wrk -t4 -c100, 3 s warmup. platform-hono: NestJS 12.1.3. platform-fastify, platform-express: NestJS 12.1.2 from nestjs/nest#18063. platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Bun and Node.js." src="assets/benchmark-light.svg" width="640">
 </picture>
 
 <!-- benchmark-chart:end -->
 
-On Bun, platform-hono runs NestJS faster than `@nestjs/platform-fastify` and
-`@nestjs/platform-express`. On Node.js it beats platform-express, is about 11%
-behind platform-fastify, and is about 18% behind the unreleased
-`@nestjs/platform-node` from
-[nestjs/nest#18063](https://github.com/nestjs/nest/pull/18063), which runs on
-NestJS 12. In the same benchmark, version 0.4.0 serves `GET /` about 4.3x faster
-than 0.3.0 on Bun and 2.8x faster on Node.js.
+On Bun, platform-hono is the fastest of these NestJS adapters: 16% ahead of the
+unreleased `@nestjs/platform-node` from
+[nestjs/nest#18063](https://github.com/nestjs/nest/pull/18063), 34% ahead of
+`@nestjs/platform-fastify`, and 59% ahead of `@nestjs/platform-express`. On
+Node.js it is 3% behind platform-fastify, 9% behind platform-node, and 49% ahead
+of platform-express. On the same NestJS 12 setup, 0.5.0 serves `GET /` 16%
+faster than 0.4.0 on Bun and 26% faster on Node.js.
 
 <!-- benchmark-table:start -->
 
 | Runtime | platform-hono | vs platform-fastify | vs platform-express | vs platform-node (unreleased) |
 | --- | ---: | ---: | ---: | ---: |
-| Bun | 117,870 req/s | +11% | +35% | – |
-| Node.js | 90,645 req/s | −11% | +37% | −18% |
+| Bun | 140,247 req/s | +34% | +59% | +16% |
+| Node.js | 100,424 req/s | −3% | +49% | −9% |
 
-Requests per second for `GET /` on Apple M4 with `wrk -t4 -c100` after a 3 s warmup, following the [NestJS benchmark methodology](https://github.com/nestjs/nest/pull/18063). platform-hono, platform-fastify, and platform-express run NestJS 11.2.7. The unreleased platform-node runs NestJS 12.1.2 from [nestjs/nest#18063](https://github.com/nestjs/nest/pull/18063), measured on Node.js only. To measure the adapter on your machine, see [bench/README.md](bench/README.md).
+Requests per second for `GET /` on Apple M4 with `wrk -t4 -c100` after a 3 s warmup, following the [NestJS benchmark methodology](https://github.com/nestjs/nest/pull/18063). platform-hono runs NestJS 12.1.3. platform-fastify and platform-express run NestJS 12.1.2 from [nestjs/nest#18063](https://github.com/nestjs/nest/pull/18063). The unreleased platform-node runs NestJS 12.1.2 from [nestjs/nest#18063](https://github.com/nestjs/nest/pull/18063), measured on Bun and Node.js. To measure the adapter on your machine, see [bench/README.md](bench/README.md).
 
 <!-- benchmark-table:end -->
 

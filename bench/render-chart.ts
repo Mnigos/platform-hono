@@ -18,6 +18,13 @@ interface Setup {
 	warmupSeconds: number
 }
 
+interface NestBuild {
+	adapters: readonly string[]
+	nest: string
+	source: string
+	sourceUrl: string
+}
+
 interface UnreleasedAdapter {
 	adapter: string
 	nest: string
@@ -31,6 +38,7 @@ interface Runtime {
 }
 
 export interface BenchmarkResults {
+	nestBuilds: NestBuild[]
 	route: string
 	runtimes: Runtime[]
 	setup: Setup
@@ -235,7 +243,6 @@ function renderPicture(results: BenchmarkResults) {
 
 function renderTable(results: BenchmarkResults) {
 	const others = ADAPTERS.filter(adapter => adapter !== HIGHLIGHTED_ADAPTER)
-	const released = ADAPTERS.filter(adapter => !findUnreleased(results, adapter))
 	const { machine, nest, load, warmupSeconds, methodology } = results.setup
 	const rows = results.runtimes.map(runtime => {
 		const highlighted = runtime.requestsPerSecond[HIGHLIGHTED_ADAPTER]
@@ -249,17 +256,24 @@ function renderTable(results: BenchmarkResults) {
 
 		return `| ${runtime.name} | ${highlightedCell} | ${changes.join(' | ')} |`
 	})
-	const unreleasedSentences = results.unreleased.map(
-		entry =>
-			` The unreleased ${entry.adapter} runs NestJS ${entry.nest} from [${entry.source}](${entry.sourceUrl}), measured on ${formatRuntimeScope(results, entry.adapter)}.`
-	)
+	const nestSentences = [
+		`${formatRun(getDefaultNestAdapters(results))} NestJS ${nest}.`,
+		...results.nestBuilds.map(
+			build =>
+				`${formatRun(build.adapters)} NestJS ${build.nest} from [${build.source}](${build.sourceUrl}).`
+		),
+		...results.unreleased.map(
+			entry =>
+				`The unreleased ${entry.adapter} runs NestJS ${entry.nest} from [${entry.source}](${entry.sourceUrl}), measured on ${formatRuntimeScope(results, entry.adapter)}.`
+		),
+	]
 
 	return [
 		`| Runtime | ${HIGHLIGHTED_ADAPTER} | ${others.map(adapter => `vs ${getAdapterLabel(results, adapter)}`).join(' | ')} |`,
 		`| --- | ---: | ${others.map(() => '---:').join(' | ')} |`,
 		...rows,
 		'',
-		`Requests per second for \`${results.route}\` on ${machine} with \`${load}\` after a ${warmupSeconds} s warmup, following the [NestJS benchmark methodology](${methodology}). ${listFormat.format(released)} run NestJS ${nest}.${unreleasedSentences.join('')} To measure the adapter on your machine, see [bench/README.md](bench/README.md).`,
+		`Requests per second for \`${results.route}\` on ${machine} with \`${load}\` after a ${warmupSeconds} s warmup, following the [NestJS benchmark methodology](${methodology}). ${nestSentences.join(' ')} To measure the adapter on your machine, see [bench/README.md](bench/README.md).`,
 	].join('\n')
 }
 
@@ -280,7 +294,12 @@ function getNotes(results: BenchmarkResults) {
 	const { machine, nest, load, warmupSeconds } = results.setup
 
 	return [
-		`${machine} · ${load}, ${warmupSeconds} s warmup · NestJS ${nest}`,
+		`${machine} · ${load}, ${warmupSeconds} s warmup`,
+		`${getDefaultNestAdapters(results).join(', ')}: NestJS ${nest}`,
+		...results.nestBuilds.map(
+			build =>
+				`${build.adapters.join(', ')}: NestJS ${build.nest} from ${build.source}`
+		),
 		...results.unreleased.map(
 			entry =>
 				`${entry.adapter} (unreleased): NestJS ${entry.nest} from ${entry.source}, ${formatRuntimeScope(results, entry.adapter)}`
@@ -290,6 +309,18 @@ function getNotes(results: BenchmarkResults) {
 
 const findUnreleased = (results: BenchmarkResults, adapter: string) =>
 	results.unreleased.find(entry => entry.adapter === adapter)
+
+function getDefaultNestAdapters(results: BenchmarkResults) {
+	const listed = [
+		...results.nestBuilds.flatMap(build => build.adapters),
+		...results.unreleased.map(entry => entry.adapter),
+	]
+
+	return ADAPTERS.filter(adapter => !listed.includes(adapter))
+}
+
+const formatRun = (adapters: readonly string[]) =>
+	`${listFormat.format(adapters)} ${adapters.length === 1 ? 'runs' : 'run'}`
 
 const getAdapterLabel = (results: BenchmarkResults, adapter: Adapter) =>
 	findUnreleased(results, adapter) ? `${adapter} (unreleased)` : adapter

@@ -17,7 +17,8 @@ const README_BLOCKS = [
 
 const unreleasedResults = {
 	route: 'GET /',
-	setup: results.setup,
+	setup: { ...results.setup, nest: '11.2.7' },
+	nestBuilds: [],
 	unreleased: [
 		{
 			adapter: 'platform-node',
@@ -103,6 +104,31 @@ describe('benchmark chart', () => {
 		expect(readme).toContain('| Node.js | 90,000 req/s | −10% | +50% | −18% |')
 		expect(readme).toContain(
 			'platform-hono, platform-fastify, and platform-express run NestJS 11.2.7. The unreleased platform-node runs NestJS 12.1.2 from [nestjs/nest#18063](https://github.com/nestjs/nest/pull/18063), measured on Node.js only.'
+		)
+	})
+
+	test('names the NestJS build of adapters that run another NestJS version', () => {
+		const nestBuildResults = {
+			...unreleasedResults,
+			setup: { ...results.setup, nest: '12.1.3' },
+			nestBuilds: [
+				{
+					adapters: ['platform-fastify', 'platform-express'],
+					nest: '12.1.2',
+					source: 'nestjs/nest#18063',
+					sourceUrl: 'https://github.com/nestjs/nest/pull/18063',
+				},
+			],
+		} as const satisfies BenchmarkResults
+
+		expect(renderReadme(README_BLOCKS, nestBuildResults)).toContain(
+			'platform-hono runs NestJS 12.1.3. platform-fastify and platform-express run NestJS 12.1.2 from [nestjs/nest#18063](https://github.com/nestjs/nest/pull/18063). The unreleased platform-node runs NestJS 12.1.2'
+		)
+		const svg = renderChartSvg(nestBuildResults, 'light')
+
+		expect(svg).toContain('>platform-hono: NestJS 12.1.3</text>')
+		expect(svg).toContain(
+			'>platform-fastify, platform-express: NestJS 12.1.2 from nestjs/nest#18063</text>'
 		)
 	})
 
