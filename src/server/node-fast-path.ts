@@ -1,13 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { TLSSocket } from 'node:tls'
 import { getRequestListener } from '@hono/node-server'
-import type { Context, Hono, MiddlewareHandler, NotFoundHandler } from 'hono'
-import type { SecurityRequestHook } from '../helpers/nest-12'
-import type { HonoAdapterOptions } from '../options'
-import { isBodyLimitLayer } from '../request/body-limit-middleware'
+import type { Context, Hono, NotFoundHandler } from 'hono'
 import { prepareRequest } from '../request/request-layer'
-import type { RouteRegistry } from '../routing/route-registry'
-import { type DispatchTarget, FastExchange } from './fast-dispatch'
+import { FastExchange } from './fast-dispatch'
+import { type FastPathOptions, FastRoutes } from './fast-routes'
 import {
 	type ContextClass,
 	ContextOptionsRecord,
@@ -30,8 +27,6 @@ export type NodeListener = (
 	outgoing: ServerResponse
 ) => unknown
 
-type MatchedHandlers = [[Function, unknown], unknown][]
-
 /**
  * `ctx.env` as `@hono/node-server` passes it, created without an object
  * literal (see `RequestStateRecord`) but with the same keys and prototype.
@@ -39,14 +34,6 @@ type MatchedHandlers = [[Function, unknown], unknown][]
 interface NodeEnv {
 	incoming: IncomingMessage
 	outgoing: ServerResponse
-}
-
-export interface NodeFastPathOptions {
-	adapterOptions: HonoAdapterOptions
-	hono: Hono
-	requestLayer: MiddlewareHandler
-	routes: RouteRegistry
-	securityHooks: readonly SecurityRequestHook[]
 }
 
 interface FastPathRuntime {
@@ -71,6 +58,31 @@ function tryWriteDirectly(
 	}
 }
 
+/** A fast path request on Node.js, answered on its `ServerResponse`. */
+class NodeExchange extends FastExchange {
+	readonly incoming: IncomingMessage
+	readonly outgoing: ServerResponse
+	private readonly fastPath: NodeFastPath
+
+	constructor(
+		ctx: Context,
+		hono: Hono,
+		notFoundHandler: NotFoundHandler,
+		fastPath: NodeFastPath,
+		incoming: IncomingMessage,
+		outgoing: ServerResponse
+	) {
+		super(ctx, hono, notFoundHandler)
+		this.fastPath = fastPath
+		this.incoming = incoming
+		this.outgoing = outgoing
+	}
+
+	protected respond(result: unknown) {
+		this.fastPath.respond(this, result)
+	}
+}
+
 /**
  * Serves plain Nest `GET` routes on Node.js without the Fetch round trip:
  * `@hono/node-server`'s lightweight request, Hono's `Context`, and the
@@ -79,45 +91,24 @@ function tryWriteDirectly(
  * promise plumbing. Requests it does not cover go to `@hono/node-server`'s
  * listener unchanged.
  */
-export class NodeFastPath implements DispatchTarget {
-	private catchAllMiddleware = false
-	private readonly getPath: Hono['getPath']
+export class NodeFastPath {
+	private readonly fastRoutes: FastRoutes
 	private readonly hono: Hono
-	private notFoundHandler?: NotFoundHandler
 	private readonly prepare: (ctx: Context) => void
 	private prepared?: Promise<unknown>
-	private readonly requestLayer: MiddlewareHandler
-	private routeCount = 0
-	private readonly routes: RouteRegistry
 	private readonly runtime: FastPathRuntime
 	private verbatimHost?: string
 	private readonly writer: NodeListener
 
-	constructor(
-		{
-			adapterOptions,
-			hono,
-			requestLayer,
-			routes,
-			securityHooks,
-		}: NodeFastPathOptions,
-		runtime: FastPathRuntime
-	) {
-		this.getPath = hono.getPath
+	constructor(options: FastPathOptions, runtime: FastPathRuntime) {
+		const { adapterOptions, hono, securityHooks } = options
+		this.fastRoutes = new FastRoutes(options)
 		this.hono = hono
 		this.prepare = ctx => prepareRequest(ctx, adapterOptions, securityHooks)
-		this.requestLayer = requestLayer
-		this.routes = routes
 		this.runtime = runtime
 		this.writer = getRequestListener(() => this.takePrepared(), {
 			overrideGlobalObjects: false,
 		}) as NodeListener
-		const setNotFoundHandler = hono.notFound
-		const notFound: Hono['notFound'] = handler => {
-			this.notFoundHandler = handler
-			return setNotFoundHandler(handler)
-		}
-		hono.notFound = notFound
 	}
 
 	/**
@@ -133,7 +124,7 @@ export class NodeFastPath implements DispatchTarget {
 	 * with the same calls as `@hono/node-server`, and everything else through
 	 * its writer, as the promise `hono.fetch()` would have returned.
 	 */
-	respond({ incoming, outgoing }: FastExchange, result: unknown) {
+	respond({ incoming, outgoing }: NodeExchange, result: unknown) {
 		const { writeCachedResponse } = this.runtime
 		const cache = this.getResponseCache(result)
 		if (
@@ -168,39 +159,39 @@ export class NodeFastPath implements DispatchTarget {
 	 */
 	private serve(incoming: IncomingMessage, outgoing: ServerResponse) {
 		const { headers, url } = incoming
-		const notFoundHandler = this.notFoundHandler
+		const fastRoutes = this.fastRoutes
 		if (
 			incoming.method !== 'GET' ||
-			!notFoundHandler ||
 			url === undefined ||
 			headers['content-length'] !== undefined ||
 			headers['transfer-encoding'] !== undefined ||
 			headers['content-type'] !== undefined ||
-			this.hasCatchAllMiddleware()
+			!fastRoutes.isEnabled()
 		)
 			return false
 		const { host } = headers
 		if (!(host && this.isVerbatimHost(host))) return false
 		const path = getVerbatimPath(url)
-		if (path === undefined || this.hono.getPath !== this.getPath) return false
-		const matchResult = this.match(path)
-		const route = matchResult && this.getRoute(matchResult)
+		if (path === undefined) return false
+		const matchResult = fastRoutes.match(path)
+		const route = matchResult && fastRoutes.getRoute(matchResult)
 		if (!route) return false
+		const notFoundHandler = fastRoutes.notFoundHandler as NotFoundHandler
 
 		const request = this.createRequest(incoming, host, url)
 		const env: NodeEnv = Object.create(Object.prototype)
 		env.incoming = incoming
 		env.outgoing = outgoing
-		const exchange = new FastExchange(
+		const exchange = new NodeExchange(
 			new this.runtime.HonoContext(
 				request,
 				new ContextOptionsRecord(env, matchResult, notFoundHandler, path)
 			),
 			this.hono,
-			incoming,
 			notFoundHandler,
-			outgoing,
-			this
+			this,
+			incoming,
+			outgoing
 		)
 		exchange.dispatch(this.prepare, route)
 		outgoing.on(
@@ -210,53 +201,11 @@ export class NodeFastPath implements DispatchTarget {
 		return true
 	}
 
-	/**
-	 * Whether a middleware other than the adapter's layers runs for every
-	 * request (such as CORS or Nest's `app.use()`), so no request can be served.
-	 * Checked again only when routes were added.
-	 */
-	private hasCatchAllMiddleware() {
-		const { routes } = this.hono
-		if (routes.length === this.routeCount) return this.catchAllMiddleware
-		this.routeCount = routes.length
-		this.catchAllMiddleware = routes.some(
-			({ handler, method, path }) =>
-				method === 'ALL' &&
-				path === '/*' &&
-				handler !== this.requestLayer &&
-				!isBodyLimitLayer(handler)
-		)
-		return this.catchAllMiddleware
-	}
-
 	private isVerbatimHost(host: string) {
 		if (host === this.verbatimHost) return true
 		if (!isVerbatimHost(host)) return false
 		this.verbatimHost = host
 		return true
-	}
-
-	/**
-	 * Matches the path with Hono's router. A router error is left to
-	 * `hono.fetch()`, which reports it as on the Hono path.
-	 */
-	private match(path: string) {
-		try {
-			return this.hono.router.match('GET', path)
-		} catch {
-			return
-		}
-	}
-
-	private getRoute(matchResult: ReturnType<Hono['router']['match']>) {
-		const handlers = matchResult[0] as unknown as MatchedHandlers
-		if (
-			handlers.length !== 3 ||
-			handlers[0]?.[0][0] !== this.requestLayer ||
-			!isBodyLimitLayer(handlers[1]?.[0][0])
-		)
-			return
-		return this.routes.getRouteForGet(handlers[2]?.[0][0])
 	}
 
 	/** `@hono/node-server`'s `newRequest()` for a verbatim target and host. */
@@ -280,7 +229,7 @@ export class NodeFastPath implements DispatchTarget {
  * Hono pass their self-checks, or returns `undefined`, which keeps every
  * request on `@hono/node-server` and `hono.fetch()`.
  */
-export function createNodeFastPath(options: NodeFastPathOptions) {
+export function createNodeFastPath(options: FastPathOptions) {
 	if (typeof Bun !== 'undefined' || options.adapterOptions.runtime === 'bun')
 		return
 	const internals = getNodeServerInternals()
