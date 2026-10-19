@@ -41,15 +41,47 @@ const RESPONSE_ACCESSOR = {
 } as const satisfies PropertyDescriptor
 
 /**
- * Starts tracking a context: wraps `ctx.header()` and `ctx.status()` and
- * observes reads of `ctx.res`. `tracking` is usually the request state, so no
- * separate object is allocated per request.
+ * Observes reads of `ctx.res` through an own accessor on the context.
+ */
+export function observeResponseReads(ctx: Context) {
+	Object.defineProperty(ctx, 'res', RESPONSE_ACCESSOR)
+}
+
+/**
+ * `ctx.res` for an adapter-owned Context prototype: Hono's accessor from
+ * `honoPrototype`, recording reads like the own accessor of other contexts.
+ */
+export function createResponseReadsDescriptor(
+	honoPrototype: object
+): PropertyDescriptor {
+	const { get, set } = Object.getOwnPropertyDescriptor(
+		honoPrototype,
+		'res'
+	) as PropertyDescriptor
+	return {
+		configurable: true,
+		enumerable: false,
+		get(this: TrackedContext) {
+			const tracking = this[CONTEXT_TRACKING]
+			if (tracking) tracking.touched = true
+			return get?.call(this)
+		},
+		set(this: TrackedContext, value: Response | undefined) {
+			set?.call(this, value)
+		},
+	}
+}
+
+/**
+ * Starts tracking a context: wraps `ctx.header()` and `ctx.status()`. Reads
+ * of `ctx.res` are observed by `observeResponseReads()` or the adapter-owned
+ * Context prototype. `tracking` is usually the request state, so no separate
+ * object is allocated per request.
  */
 export function trackContext(ctx: Context, tracking: ContextTracking) {
 	const trackedContext = ctx as TrackedContext
 	tracking.touched = false
 	trackedContext[CONTEXT_TRACKING] = tracking
-	Object.defineProperty(ctx, 'res', RESPONSE_ACCESSOR)
 	const { header, status } = ctx
 	ctx.header = ((...args: Parameters<Context['header']>) => {
 		tracking.touched = true

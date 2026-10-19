@@ -4,7 +4,7 @@ import { getNestHonoRequest, type NestHonoRequest } from '../helpers/request'
 import type { HonoAdapterOptions } from '../options'
 import { trackContext } from '../response/context-tracking'
 import { getResponseHeaders } from '../response/sse-bridge'
-import { defineOwnAccessors } from './request-accessors'
+import { defineOwnAccessors, isAdapterContext } from './request-accessors'
 import {
 	getNodeBindings,
 	getRequestHeader,
@@ -98,7 +98,9 @@ export function getRequestState(ctx: Context, options: HonoAdapterOptions) {
 
 	const state: RequestState = new RequestStateRecord(ctx, options)
 	req[REQUEST_STATE] = state
-	defineOwnAccessors(ctx, req, state)
+	if (!isAdapterContext(ctx)) defineOwnAccessors(ctx, req, state)
+	else if (state.incoming && !options.trustProxy)
+		state.ip = state.incoming.socket?.remoteAddress || null
 	trackContext(ctx, state)
 	;(ctx as Context & { getHeaders?: unknown }).getHeaders = () =>
 		getResponseHeaders(ctx)

@@ -48,13 +48,21 @@ function isHonoRequestMethod(value: unknown): value is Function {
 	return typeof value === 'function' && honoRequestMethods.has(value)
 }
 
+/**
+ * Collects the methods of Hono's request class once, from every prototype
+ * above the request (requests created by the fast paths have an
+ * adapter-owned prototype in front of `HonoRequest.prototype`).
+ */
 function rememberHonoRequestMethods(request: HonoRequest) {
 	if (honoRequestMethods.has(request.header)) return
-	const prototype = Object.getPrototypeOf(request) as Record<string, unknown>
-	for (const name of Object.getOwnPropertyNames(prototype)) {
-		const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
-		if (typeof descriptor?.value === 'function' && name !== 'constructor')
-			honoRequestMethods.add(descriptor.value)
+	let prototype = Object.getPrototypeOf(request) as object | null
+	while (prototype && prototype !== Object.prototype) {
+		for (const name of Object.getOwnPropertyNames(prototype)) {
+			const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
+			if (typeof descriptor?.value === 'function' && name !== 'constructor')
+				honoRequestMethods.add(descriptor.value)
+		}
+		prototype = Object.getPrototypeOf(prototype) as object | null
 	}
 }
 
