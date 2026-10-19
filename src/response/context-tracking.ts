@@ -73,6 +73,33 @@ export function createResponseReadsDescriptor(
 }
 
 /**
+ * `ctx.header()` that records the call. Per-request closures are returned from
+ * functions instead of being assigned to a property where they are created:
+ * V8 allocates a function literal assigned straight to a property in old
+ * space, and such a closure keeps the whole request alive past young GCs.
+ */
+function trackHeaderCalls(
+	tracking: ContextTracking,
+	header: Context['header']
+) {
+	return ((...args: Parameters<Context['header']>) => {
+		tracking.touched = true
+		return header(...args)
+	}) as Context['header']
+}
+
+/** `ctx.status()` that records the status (see `trackHeaderCalls`). */
+function trackStatusCalls(
+	tracking: ContextTracking,
+	status: Context['status']
+) {
+	return ((statusCode: Parameters<Context['status']>[0]) => {
+		tracking.statusCode = statusCode
+		status(statusCode)
+	}) as Context['status']
+}
+
+/**
  * Starts tracking a context: wraps `ctx.header()` and `ctx.status()`. Reads
  * of `ctx.res` are observed by `observeResponseReads()` or the adapter-owned
  * Context prototype. `tracking` is usually the request state, so no separate
@@ -83,14 +110,8 @@ export function trackContext(ctx: Context, tracking: ContextTracking) {
 	tracking.touched = false
 	trackedContext[CONTEXT_TRACKING] = tracking
 	const { header, status } = ctx
-	ctx.header = ((...args: Parameters<Context['header']>) => {
-		tracking.touched = true
-		return header(...args)
-	}) as Context['header']
-	ctx.status = statusCode => {
-		tracking.statusCode = statusCode
-		status(statusCode)
-	}
+	ctx.header = trackHeaderCalls(tracking, header)
+	ctx.status = trackStatusCalls(tracking, status)
 	return tracking
 }
 

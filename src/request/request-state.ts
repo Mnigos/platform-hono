@@ -56,6 +56,25 @@ function requestOn(state: RequestState, event: string, listener: Listener) {
 }
 
 /**
+ * The `req.on()` of a request. Per-request closures are returned from
+ * functions instead of being assigned to a property where they are created:
+ * V8 allocates a function literal assigned straight to a property in old
+ * space, and such a closure keeps the whole request alive past young GCs
+ * (with NestJS 12 on Node.js the server then spent most of its time in full
+ * GCs).
+ */
+function createRequestOn(state: RequestState) {
+	const on = (event: string, listener: Listener) =>
+		requestOn(state, event, listener)
+	return on
+}
+
+/** `ctx.getHeaders()` of a request (see `createRequestOn`). */
+function createGetHeaders(ctx: Context) {
+	return () => getResponseHeaders(ctx)
+}
+
+/**
  * Request state built by a constructor instead of an object literal. V8 can
  * pretenure an object literal's allocation site (allocate it straight in old
  * space) after a burst of surviving objects; a pretenured state then keeps the
@@ -77,7 +96,7 @@ class RequestStateRecord implements RequestState {
 		this.ctx = ctx
 		this.incoming = getNodeBindings(ctx).incoming
 		this.method = rawRequest.method
-		this.on = (event, listener) => requestOn(this, event, listener)
+		this.on = createRequestOn(this)
 		this.options = options
 		this.pathname = getUrlPathname(rawRequest.url)
 		this.rawRequest = rawRequest
@@ -102,8 +121,8 @@ export function getRequestState(ctx: Context, options: HonoAdapterOptions) {
 	else if (state.incoming && !options.trustProxy)
 		state.ip = state.incoming.socket?.remoteAddress || null
 	trackContext(ctx, state)
-	;(ctx as Context & { getHeaders?: unknown }).getHeaders = () =>
-		getResponseHeaders(ctx)
+	;(ctx as Context & { getHeaders?: unknown }).getHeaders =
+		createGetHeaders(ctx)
 	req.baseUrl = state.pathname
 	req.on = state.on
 	syncRawRequest(state)
