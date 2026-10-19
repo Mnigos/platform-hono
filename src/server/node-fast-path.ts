@@ -112,6 +112,15 @@ export class NodeFastPath {
 	}
 
 	/**
+	 * Whether the fast path may stand in for the server's `fetch`, which is
+	 * `hono.fetch` as read when the server is created: only while it is
+	 * Hono's own. A replaced `hono.fetch` keeps every request on it.
+	 */
+	servesFetch(fetch: Hono['fetch']) {
+		return this.fastRoutes.isHonoFetch(fetch)
+	}
+
+	/**
 	 * Puts the fast path in front of `@hono/node-server`'s listener.
 	 */
 	wrapListener(listener: NodeListener): NodeListener {

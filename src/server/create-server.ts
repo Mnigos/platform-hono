@@ -28,9 +28,11 @@ type CreateNodeServer = (
  */
 function withFastPath<TCreate>(
 	create: TCreate,
+	fetch: Hono['fetch'],
 	fastPath?: BunFastPath | NodeFastPath
 ) {
-	if (!(fastPath instanceof NodeFastPath)) return create
+	if (!(fastPath instanceof NodeFastPath && fastPath.servesFetch(fetch)))
+		return create
 	const createServerWithFastPath: CreateNodeServer = (options, listener) =>
 		(create as unknown as CreateNodeServer)(
 			options,
@@ -43,6 +45,8 @@ function withFastPath<TCreate>(
  * Creates the HTTP server for the resolved runtime: `Bun.serve` on Bun and
  * `@hono/node-server` on Node.js or when `runtime: 'node'` is forced, with the
  * runtime's fast path in front of `hono.fetch()` when there is one.
+ * `hono.fetch` is read once, here, so a replacement installed before the
+ * server is created handles requests and later ones do not.
  */
 export function createServer(
 	hono: Hono,
@@ -50,9 +54,10 @@ export function createServer(
 	adapterOptions: HonoAdapterOptions,
 	fastPath?: BunFastPath | NodeFastPath
 ): HonoHttpServer {
+	const { fetch } = hono
 	if (resolveRuntime(adapterOptions.runtime) === 'bun')
 		return new BunHttpServer(
-			fastPath instanceof BunFastPath ? fastPath.fetch : hono.fetch,
+			fastPath instanceof BunFastPath ? fastPath.wrapFetch(fetch) : fetch,
 			{
 				forceCloseConnections: options.forceCloseConnections,
 				httpsOptions: options.httpsOptions,
@@ -63,14 +68,14 @@ export function createServer(
 	return (
 		options.httpsOptions
 			? createAdaptorServer({
-					fetch: hono.fetch,
-					createServer: withFastPath(createHttpsServer, fastPath),
+					fetch,
+					createServer: withFastPath(createHttpsServer, fetch, fastPath),
 					overrideGlobalObjects: false,
 					serverOptions: options.httpsOptions,
 				})
 			: createAdaptorServer({
-					fetch: hono.fetch,
-					createServer: withFastPath(createHttpServer, fastPath),
+					fetch,
+					createServer: withFastPath(createHttpServer, fetch, fastPath),
 					overrideGlobalObjects: false,
 				})
 	) as HttpServer | HttpsServer
