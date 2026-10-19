@@ -26,7 +26,12 @@ apps. After a new measurement, update it and regenerate the chart SVGs in
 bun bench/chart.ts
 ```
 
-Adapters listed under `unreleased`, such as `platform-node` from
-nestjs/nest#18063, are labelled as unreleased with their own NestJS version and
-only appear for the runtimes that have a measurement. `bun run test` fails while
-the chart or README is out of date with `results.json`.
+`setup.nest` is the NestJS version of every adapter not listed under
+`nestBuilds` or `unreleased`. `nestBuilds` names the NestJS build that other
+released adapters run, such as `platform-fastify` and `platform-express` on the
+NestJS 12.1.2 build from nestjs/nest#18063. Adapters listed under `unreleased`,
+such as `platform-node` from nestjs/nest#18063, are labelled as unreleased with
+their own NestJS version and only appear for the runtimes that have a
+measurement. `platform-node` runs on Bun through Bun's `node:http`
+compatibility. `bun run test` fails while the chart or README is out of date
+with `results.json`.
