@@ -1,14 +1,5 @@
-import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Context, ErrorHandler, Hono, NotFoundHandler } from 'hono'
 import { type RouteHandlerOptions, runRoute } from '../routing/route-invoker'
-
-/**
- * Receives what `hono.fetch()` would have returned for a fast path request:
- * the response, a promise of it, or a rejected promise.
- */
-export interface DispatchTarget {
-	respond(exchange: FastExchange, result: unknown): void
-}
 
 interface HonoWithErrorHandler {
 	errorHandler: ErrorHandler
@@ -28,42 +19,35 @@ const isThenable = (value: unknown): value is PromiseLike<unknown> =>
 	typeof (value as PromiseLike<unknown> | undefined)?.then === 'function'
 
 /**
- * One Node.js fast path request, dispatched through the adapter's layers with
- * the semantics of Hono's `#dispatch()` and `compose()`: the same `routeIndex`
+ * One fast path request, dispatched through the adapter's layers with the
+ * semantics of Hono's `#dispatch()` and `compose()`: the same `routeIndex`
  * updates, `next()` reaching the not-found handler, every layer's error
  * handling, and the "not finalized" check. Only the promise plumbing between
- * the layers is left out.
+ * the layers is left out. Each runtime delivers the result in `respond()`.
  */
-export class FastExchange {
+export abstract class FastExchange {
 	readonly ctx: Context
-	readonly incoming: IncomingMessage
-	readonly outgoing: ServerResponse
 	private readonly errorHandler: ErrorHandler
 	private readonly hono: Hono
 	private readonly notFoundHandler: NotFoundHandler
-	private readonly target: DispatchTarget
 	private routeSettled = false
 
 	/**
 	 * Positional parameters: an options object literal per request could be
 	 * pretenured by V8 (see `RequestStateRecord`).
 	 */
-	constructor(
-		ctx: Context,
-		hono: Hono,
-		incoming: IncomingMessage,
-		notFoundHandler: NotFoundHandler,
-		outgoing: ServerResponse,
-		target: DispatchTarget
-	) {
+	constructor(ctx: Context, hono: Hono, notFoundHandler: NotFoundHandler) {
 		this.ctx = ctx
 		this.hono = hono
-		this.incoming = incoming
 		this.notFoundHandler = notFoundHandler
-		this.outgoing = outgoing
-		this.target = target
 		this.errorHandler = (hono as unknown as HonoWithErrorHandler).errorHandler
 	}
+
+	/**
+	 * Receives what `hono.fetch()` would have returned: the response, a
+	 * promise of it, or a rejected promise.
+	 */
+	protected abstract respond(result: unknown): void
 
 	/**
 	 * Runs the request layer's work (`prepare`), then the route.
@@ -155,7 +139,7 @@ export class FastExchange {
 			this.handleError(error)
 			return
 		}
-		this.target.respond(this, response)
+		this.respond(response)
 	}
 
 	/** `compose()`'s error handling for an error thrown by a layer. */
@@ -184,7 +168,7 @@ export class FastExchange {
 	/** `#dispatch()`'s `#handleError()`: the error handler's result is the response. */
 	private handleError(error: unknown) {
 		if (!(error instanceof Error)) {
-			this.target.respond(this, Promise.reject(error))
+			this.respond(Promise.reject(error))
 			return
 		}
 		let result: unknown
@@ -196,6 +180,6 @@ export class FastExchange {
 		} catch (handlerError) {
 			result = Promise.reject(handlerError)
 		}
-		this.target.respond(this, result)
+		this.respond(result)
 	}
 }
