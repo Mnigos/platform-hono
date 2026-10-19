@@ -161,16 +161,17 @@ export class NodeFastPath {
 	}
 
 	/**
-	 * Serves a `GET` request without body headers, with a request target and
-	 * `Host` that `@hono/node-server` uses verbatim, whose matched handlers are
-	 * exactly the adapter's request layer, its body layer, and a Nest route.
-	 * Returns `false` for any other request.
+	 * Serves an HTTP/1.x `GET` request without body headers, with a request
+	 * target and `Host` that `@hono/node-server` uses verbatim, whose matched
+	 * handlers are exactly the adapter's request layer, its body layer, and a
+	 * Nest route. Returns `false` for any other request.
 	 */
 	private serve(incoming: IncomingMessage, outgoing: ServerResponse) {
 		const { headers, url } = incoming
 		const fastRoutes = this.fastRoutes
 		if (
 			incoming.method !== 'GET' ||
+			incoming.httpVersionMajor !== 1 ||
 			url === undefined ||
 			headers['content-length'] !== undefined ||
 			headers['transfer-encoding'] !== undefined ||
