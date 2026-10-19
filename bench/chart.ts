@@ -1,12 +1,8 @@
 // Writes assets/benchmark-{light,dark}.svg and the README benchmark blocks
 // from bench/results.json. Usage: bun bench/chart.ts
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import {
-	getChartPath,
-	renderChartSvg,
-	renderReadme,
-	THEMES,
-} from './render-chart'
+import { THEMES } from './chart-style'
+import { getChartPath, renderChartSvg, renderReadme } from './render-chart'
 import results from './results.json'
 
 const rootUrl = new URL('../', import.meta.url)

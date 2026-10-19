@@ -1,11 +1,8 @@
 import { readFileSync } from 'node:fs'
-import {
-	type BenchmarkResults,
-	getChartPath,
-	renderChartSvg,
-	renderReadme,
-	THEMES,
-} from './render-chart'
+import type { BenchmarkResults } from './chart-data'
+import { BALL_TRAVEL, getTripSeconds } from './chart-rows'
+import { THEMES } from './chart-style'
+import { getChartPath, renderChartSvg, renderReadme } from './render-chart'
 import results from './results.json'
 
 const OUTDATED_MESSAGE = 'run `bun bench/chart.ts` after editing results.json'
@@ -51,6 +48,23 @@ const unreleasedResults = {
 const readRepositoryFile = (path: string) =>
 	readFileSync(new URL(`../${path}`, import.meta.url), 'utf8')
 
+const ADAPTER_PATTERN = /<tspan class="adapter">([^<]+)<\/tspan>/
+const BADGE_PATTERN = /<g class="badge (\w+)">[\s\S]*?>([^<>]+)<\/text>/
+const BALL_X_PATTERN = /<circle class="ball[^"]*" cx="([\d.]+)"/
+const TRIP_PATTERN = /--trip:([\d.]+)s/
+
+const getRows = (svg: string) =>
+	svg
+		.split('<g class="row')
+		.slice(1)
+		.map(row => ({
+			adapter: row.match(ADAPTER_PATTERN)?.[1],
+			badge: row.match(BADGE_PATTERN),
+			ballX: row.match(BALL_X_PATTERN)?.[1],
+			highlighted: row.startsWith(' hl"'),
+			tripSeconds: Number(row.match(TRIP_PATTERN)?.[1]),
+		}))
+
 describe('benchmark chart', () => {
 	test.each(THEMES)('%s chart matches bench/results.json', theme => {
 		expect(readRepositoryFile(getChartPath(theme)), OUTDATED_MESSAGE).toBe(
@@ -67,31 +81,90 @@ describe('benchmark chart', () => {
 	test('labels an unreleased adapter and only draws it where it was measured', () => {
 		const svg = renderChartSvg(unreleasedResults, 'light')
 
-		expect(svg.match(/>platform-node \(unreleased\)<\/text>/g)).toHaveLength(1)
+		expect(svg.match(/>platform-node \(unreleased\)<\/tspan>/g)).toHaveLength(1)
 		expect(svg).toContain(
 			'platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Node.js only'
 		)
 	})
 
-	test('orders the bars of each runtime from fastest to slowest', () => {
-		const svg = renderChartSvg(unreleasedResults, 'light')
-		const labels = Array.from(
-			svg.matchAll(/<text class="(label(?: hl)?)"[^>]*>([^<]+)<\/text>/g),
-			([, className, label]) => `${className}: ${label}`
-		)
+	test('ranks every adapter on every runtime in one list, fastest first', () => {
+		const rows = getRows(renderChartSvg(unreleasedResults, 'light'))
 
-		expect(labels).toEqual([
-			'label hl: platform-hono',
-			'label: platform-fastify',
-			'label: platform-express',
-			'label: platform-node (unreleased)',
-			'label: platform-fastify',
-			'label hl: platform-hono',
-			'label: platform-express',
+		expect(rows.map(row => `${row.badge?.[2]} ${row.adapter}`)).toEqual([
+			'Bun platform-hono',
+			'Node.js platform-node (unreleased)',
+			'Bun platform-fastify',
+			'Node.js platform-fastify',
+			'Node.js platform-hono',
+			'Bun platform-express',
+			'Node.js platform-express',
 		])
-		expect(svg).toContain(
-			'Node.js: platform-node (unreleased) 110,000, platform-fastify 100,000, platform-hono 90,000, platform-express 60,000.'
+		expect(renderReadme(README_BLOCKS, unreleasedResults)).toContain(
+			'fastest first, where a faster ball serves more requests per second: platform-hono on Bun 120,000, platform-node (unreleased) on Node.js 110,000, platform-fastify on Bun 100,000, platform-fastify on Node.js 100,000, platform-hono on Node.js 90,000, platform-express on Bun 80,000, platform-express on Node.js 60,000.'
 		)
+	})
+
+	test('draws the badge of its runtime on every row', () => {
+		const rows = getRows(renderChartSvg(unreleasedResults, 'dark'))
+
+		expect(rows.map(row => `${row.badge?.[1]}: ${row.badge?.[2]}`)).toEqual([
+			'bun: Bun',
+			'node: Node.js',
+			'bun: Bun',
+			'node: Node.js',
+			'node: Node.js',
+			'bun: Bun',
+			'node: Node.js',
+		])
+	})
+
+	test('throws for a runtime without a badge', () => {
+		const denoResults = {
+			...unreleasedResults,
+			runtimes: [
+				{ name: 'Deno', requestsPerSecond: { 'platform-hono': 100_000 } },
+			],
+		} as const satisfies BenchmarkResults
+
+		expect(() => renderChartSvg(denoResults, 'light')).toThrow(
+			'No runtime badge for Deno'
+		)
+	})
+
+	test('outlines the platform-hono row of every runtime', () => {
+		const rows = getRows(renderChartSvg(unreleasedResults, 'light'))
+
+		expect(rows.filter(row => row.highlighted).map(row => row.adapter)).toEqual(
+			['platform-hono', 'platform-hono']
+		)
+		expect(
+			rows.filter(row => !row.highlighted).map(row => row.adapter)
+		).not.toContain('platform-hono')
+	})
+
+	test('moves each ball at a speed proportional to its requests per second', () => {
+		const rows = getRows(renderChartSvg(unreleasedResults, 'light'))
+
+		expect(getTripSeconds(120_000)).toBe(1)
+		expect(getTripSeconds(60_000)).toBe(2 * getTripSeconds(120_000))
+		expect(rows.map(row => row.tripSeconds)).toEqual([
+			1, 1.091, 1.2, 1.2, 1.333, 1.5, 2,
+		])
+	})
+
+	test.each(
+		THEMES
+	)('%s chart starts every ball at the client and animates without scripts', theme => {
+		const svg = renderChartSvg(unreleasedResults, theme)
+
+		expect(new Set(getRows(svg).map(row => row.ballX)).size).toBe(1)
+		expect(svg).toContain(
+			`@keyframes trip{50%{transform:translateX(${BALL_TRAVEL}px)}}`
+		)
+		expect(svg).toContain(
+			'@media (prefers-reduced-motion:reduce){.ball,.ok{animation:none}}'
+		)
+		expect(svg).not.toContain('<script')
 	})
 
 	test('compares against an unreleased adapter only where it was measured', () => {
