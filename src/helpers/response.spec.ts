@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events'
 import { PassThrough, Readable } from 'node:stream'
 import { StreamableFile } from '@nestjs/common'
 import { Hono } from 'hono'
+import { getRequestState } from '../request/request-state'
 import {
 	createResponse,
 	finalizeResponse,
@@ -250,6 +251,66 @@ describe('response helpers', () => {
 		expect(ctx.res.status).toBe(201)
 		expect(ctx.res.headers.get('x-finalized')).toBe('yes')
 		await expect(finalized.text()).resolves.toBe('ok')
+	})
+
+	test('returns the stored finalized response without reading context response again', async () => {
+		const ctx = await getContext()
+		const response = getFinalizedResponse(ctx, { ok: true })
+		const resSpy = vi.spyOn(ctx, 'res', 'get')
+
+		try {
+			expect(getFinalizedResponse(ctx)).toBe(response)
+			expect(resSpy).not.toHaveBeenCalled()
+			await expect(response.json()).resolves.toEqual({ ok: true })
+		} finally {
+			resSpy.mockRestore()
+		}
+	})
+
+	test('rebuilds a stored response after context finalization is cleared', async () => {
+		const ctx = await getContext()
+		const stored = getFinalizedResponse(
+			ctx,
+			new Response('retained body', { status: 202 })
+		)
+		ctx.res = undefined
+		ctx.finalized = false
+		ctx.header('x-rebuilt', 'yes')
+
+		const response = getFinalizedResponse(ctx)
+
+		expect(response).not.toBe(stored)
+		expect(response).toBe(ctx.res)
+		expect(ctx.finalized).toBe(true)
+		expect(response.status).toBe(202)
+		expect(response.headers.get('x-rebuilt')).toBe('yes')
+		await expect(response.text()).resolves.toBe('retained body')
+	})
+
+	test.each([
+		false,
+		true,
+	])('isolates direct JSON response mutations from later shared header defaults, Node bindings=%s', async withNodeBindings => {
+		const app = new Hono()
+		app.get('/', ctx => {
+			getRequestState(ctx, {})
+			return getFinalizedResponse(ctx, { ok: true })
+		})
+		const environment = withNodeBindings
+			? { incoming: { socket: new EventEmitter() } }
+			: {}
+		const first = await app.request('/', undefined, environment)
+		first.headers.set('content-type', 'text/custom')
+		first.headers.set('content-length', '999')
+		first.headers.set('x-first', 'changed')
+
+		const second = await app.request('/', undefined, environment)
+
+		expect(second.headers).not.toBe(first.headers)
+		expect(Object.fromEntries(second.headers)).toEqual({
+			'content-type': 'application/json',
+		})
+		await expect(second.json()).resolves.toEqual({ ok: true })
 	})
 
 	test('propagates cancellation through finalized response streams', async () => {
