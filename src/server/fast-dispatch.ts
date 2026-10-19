@@ -68,7 +68,8 @@ export abstract class FastExchange {
 				route,
 				this.createNext(),
 				response => this.settleRoute(response, false),
-				error => this.settleRoute(error, true)
+				error => this.settleRoute(error, true),
+				true
 			)
 		} catch (error) {
 			this.settleRoute(error, true)

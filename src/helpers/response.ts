@@ -283,6 +283,9 @@ export function createResponse(ctx: Context, body?: unknown) {
  * to return the response immediately.
  */
 export function getFinalizedResponse(ctx: Context, body?: unknown) {
+	const finalized = (ctx as FinalizableContext)[FINALIZED_RESPONSE]
+	if (body === undefined && finalized && ctx.finalized)
+		return finalized.response
 	const { includesContextHeaders, response } = buildResponse(ctx, body)
 	return finalizeResponse(ctx, response, includesContextHeaders)
 }

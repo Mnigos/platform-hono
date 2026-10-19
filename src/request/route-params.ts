@@ -8,11 +8,14 @@ interface OptionalParameterSuffixLike {
 
 /**
  * Sets `req.params` for the current route layer, stripping literal suffixes
- * from optional parameters such as `/:file{.json}`.
+ * from optional parameters such as `/:file{.json}`. Unless this is the last
+ * layer that sets them, it keeps a copy, so the next layer can tell the edits
+ * an earlier layer (such as Nest middleware) made.
  */
 export function setRouteParams(
 	state: RequestState,
-	optionalParameterSuffixes: readonly OptionalParameterSuffixLike[]
+	optionalParameterSuffixes: readonly OptionalParameterSuffixLike[],
+	isLastLayer = false
 ) {
 	const { ctx } = state
 	const params = ctx.req.param()
@@ -26,7 +29,7 @@ export function setRouteParams(
 	}
 	const req = getNestHonoRequest(ctx.req)
 	const previousParams = state.routeParams
-	state.routeParams = { ...params }
+	if (!isLastLayer) state.routeParams = { ...params }
 	if (previousParams && req.params)
 		keepParameterEdits(params, previousParams, req.params)
 	req.params = params
