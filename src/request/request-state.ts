@@ -212,6 +212,35 @@ function requestOn(state: RequestState, event: string, listener: Listener) {
 }
 
 /**
+ * Request state built by a constructor instead of an object literal. V8 can
+ * pretenure an object literal's allocation site (allocate it straight in old
+ * space) after a burst of surviving objects; a pretenured state then keeps the
+ * request's whole context alive until the next full GC, which made Nest 12 on
+ * Node.js spend most of its time in GC.
+ */
+class RequestStateRecord implements RequestState {
+	ctx: Context
+	incoming?: NodeIncoming
+	method: string
+	on: RequestState['on']
+	options: HonoAdapterOptions
+	pathname: string
+	rawRequest: Request
+	touched = false
+
+	constructor(ctx: Context, options: HonoAdapterOptions) {
+		const rawRequest = ctx.req.raw
+		this.ctx = ctx
+		this.incoming = getNodeBindings(ctx).incoming
+		this.method = rawRequest.method
+		this.on = (event, listener) => requestOn(this, event, listener)
+		this.options = options
+		this.pathname = getUrlPathname(rawRequest.url)
+		this.rawRequest = rawRequest
+	}
+}
+
+/**
  * Returns the path of an already serialized request URL without parsing it
  * again with `new URL()`.
  */
@@ -278,17 +307,7 @@ export function getRequestState(ctx: Context, options: HonoAdapterOptions) {
 	const existingState = req[REQUEST_STATE]
 	if (existingState) return existingState
 
-	const rawRequest = ctx.req.raw
-	const state: RequestState = {
-		ctx,
-		incoming: getNodeBindings(ctx).incoming,
-		method: rawRequest.method,
-		on: (event, listener) => requestOn(state, event, listener),
-		options,
-		pathname: getUrlPathname(rawRequest.url),
-		rawRequest,
-		touched: false,
-	}
+	const state: RequestState = new RequestStateRecord(ctx, options)
 	req[REQUEST_STATE] = state
 	if (req.ip === undefined) {
 		if (state.incoming && !options.trustProxy)

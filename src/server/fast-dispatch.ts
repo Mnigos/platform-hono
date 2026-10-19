@@ -10,15 +10,6 @@ export interface DispatchTarget {
 	respond(exchange: FastExchange, result: unknown): void
 }
 
-export interface FastExchangeOptions {
-	ctx: Context
-	hono: Hono
-	incoming: IncomingMessage
-	notFoundHandler: NotFoundHandler
-	outgoing: ServerResponse
-	target: DispatchTarget
-}
-
 interface HonoWithErrorHandler {
 	errorHandler: ErrorHandler
 }
@@ -53,14 +44,18 @@ export class FastExchange {
 	private readonly target: DispatchTarget
 	private routeSettled = false
 
-	constructor({
-		ctx,
-		hono,
-		incoming,
-		notFoundHandler,
-		outgoing,
-		target,
-	}: FastExchangeOptions) {
+	/**
+	 * Positional parameters: an options object literal per request could be
+	 * pretenured by V8 (see `RequestStateRecord`).
+	 */
+	constructor(
+		ctx: Context,
+		hono: Hono,
+		incoming: IncomingMessage,
+		notFoundHandler: NotFoundHandler,
+		outgoing: ServerResponse,
+		target: DispatchTarget
+	) {
 		this.ctx = ctx
 		this.hono = hono
 		this.incoming = incoming

@@ -11,6 +11,31 @@ export interface ContextOptions {
 	path: string
 }
 
+/**
+ * `ContextOptions` built by a constructor, so V8 cannot pretenure the options
+ * of every fast path request (see `RequestStateRecord`).
+ */
+export class ContextOptionsRecord implements ContextOptions {
+	env: unknown
+	executionCtx: undefined
+	matchResult: unknown
+	notFoundHandler: NotFoundHandler
+	path: string
+
+	constructor(
+		env: unknown,
+		matchResult: unknown,
+		notFoundHandler: NotFoundHandler,
+		path: string
+	) {
+		this.env = env
+		this.executionCtx = undefined
+		this.matchResult = matchResult
+		this.notFoundHandler = notFoundHandler
+		this.path = path
+	}
+}
+
 export type ContextClass = new (
 	request: Request,
 	options: ContextOptions

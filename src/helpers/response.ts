@@ -14,9 +14,19 @@ import {
 	withLightweightResponse,
 } from '../server/node-response'
 
-interface FinalizedResponse {
+/**
+ * The response stored on a context and the response it was built from.
+ * Per-request records are built by constructors, not object literals, so V8
+ * cannot pretenure them (see `RequestStateRecord`).
+ */
+class FinalizedResponse {
 	response: Response
 	source: Response
+
+	constructor(response: Response, source: Response) {
+		this.response = response
+		this.source = source
+	}
 }
 
 const FINALIZED_RESPONSE = Symbol('platformHonoFinalizedResponse')
@@ -74,10 +84,10 @@ export function finalizeResponse(
 	else materializeContextResponse(ctx)
 	ctx.res = response
 	const contextResponse = ctx.res
-	finalizable[FINALIZED_RESPONSE] = {
-		response: contextResponse,
-		source: response,
-	}
+	finalizable[FINALIZED_RESPONSE] = new FinalizedResponse(
+		contextResponse,
+		response
+	)
 	const listeners = finalizable[FINALIZE_LISTENERS]
 	if (listeners) for (const listener of listeners) listener()
 	return contextResponse
@@ -90,18 +100,30 @@ export function isJsonContentType(contentType: string | null) {
 	return mediaType === 'application/json' || mediaType?.endsWith('+json')
 }
 
-interface BuiltResponse {
+class BuiltResponse {
 	includesContextHeaders: boolean
 	response: Response
+
+	constructor(includesContextHeaders: boolean, response: Response) {
+		this.includesContextHeaders = includesContextHeaders
+		this.response = response
+	}
 }
 
-function fromContext(response: Response): BuiltResponse {
-	return { includesContextHeaders: true, response }
+/** `ResponseInit` of a direct reply, kept by `@hono/node-server`'s response. */
+class DirectResponseInit implements ResponseInit {
+	headers?: ResponseInit['headers']
+	status: number
+
+	constructor(status: number, headers?: ResponseInit['headers']) {
+		this.headers = headers
+		this.status = status
+	}
 }
 
-function fromElsewhere(response: Response): BuiltResponse {
-	return { includesContextHeaders: false, response }
-}
+const fromContext = (response: Response) => new BuiltResponse(true, response)
+
+const fromElsewhere = (response: Response) => new BuiltResponse(false, response)
 
 function buildResponse(ctx: Context, body?: unknown): BuiltResponse {
 	if (body instanceof Response)
@@ -157,11 +179,14 @@ function buildDirectResponse(ctx: Context, body: unknown) {
 		? getLightweightResponse()
 		: Response
 	const status = tracking.statusCode ?? 200
-	if (!isJson) return new ResponseClass(body as string, { status })
-	return new ResponseClass(JSON.stringify(body), {
-		headers: { 'content-type': 'application/json' },
-		status,
-	})
+	if (!isJson)
+		return new ResponseClass(body as string, new DirectResponseInit(status))
+	const headers: Record<string, string> = Object.create(Object.prototype)
+	headers['content-type'] = 'application/json'
+	return new ResponseClass(
+		JSON.stringify(body),
+		new DirectResponseInit(status, headers)
+	)
 }
 
 function createBufferResponse(ctx: Context, body: Buffer) {

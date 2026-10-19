@@ -8,7 +8,11 @@ import { isBodyLimitLayer } from '../request/body-limit-middleware'
 import { prepareRequest } from '../request/request-layer'
 import type { RouteRegistry } from '../routing/route-registry'
 import { type DispatchTarget, FastExchange } from './fast-dispatch'
-import { type ContextClass, getContextClass } from './hono-context'
+import {
+	type ContextClass,
+	ContextOptionsRecord,
+	getContextClass,
+} from './hono-context'
 import {
 	createAbortOnClose,
 	getNodeServerInternals,
@@ -27,6 +31,15 @@ export type NodeListener = (
 ) => unknown
 
 type MatchedHandlers = [[Function, unknown], unknown][]
+
+/**
+ * `ctx.env` as `@hono/node-server` passes it, created without an object
+ * literal (see `RequestStateRecord`) but with the same keys and prototype.
+ */
+interface NodeEnv {
+	incoming: IncomingMessage
+	outgoing: ServerResponse
+}
 
 export interface NodeFastPathOptions {
 	adapterOptions: HonoAdapterOptions
@@ -175,20 +188,20 @@ export class NodeFastPath implements DispatchTarget {
 		if (!route) return false
 
 		const request = this.createRequest(incoming, host, url)
-		const exchange = new FastExchange({
-			ctx: new this.runtime.HonoContext(request, {
-				env: { incoming, outgoing },
-				executionCtx: undefined,
-				matchResult,
-				notFoundHandler,
-				path,
-			}),
-			hono: this.hono,
+		const env: NodeEnv = Object.create(Object.prototype)
+		env.incoming = incoming
+		env.outgoing = outgoing
+		const exchange = new FastExchange(
+			new this.runtime.HonoContext(
+				request,
+				new ContextOptionsRecord(env, matchResult, notFoundHandler, path)
+			),
+			this.hono,
 			incoming,
 			notFoundHandler,
 			outgoing,
-			target: this,
-		})
+			this
+		)
 		exchange.dispatch(this.prepare, route)
 		outgoing.on(
 			'close',

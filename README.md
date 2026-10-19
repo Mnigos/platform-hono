@@ -38,10 +38,7 @@ bun add @mnigos/platform-hono hono @hono/node-server @nestjs/common @nestjs/core
 ```
 
 `@nestjs/common`, `@nestjs/core`, `hono`, and `@hono/node-server` are peer
-dependencies. NestJS 11 and 12 are supported. On Node.js, NestJS 12 currently
-runs noticeably slower with this adapter than NestJS 11 (about 10-25% fewer
-requests per second in local benchmarks) because of higher garbage-collection
-work per request; Bun is not affected. This is under investigation. On NestJS 12 the adapter also
+dependencies. NestJS 11 and 12 are supported. On NestJS 12 the adapter also
 supports `@QueryMethod()` routes, `app.useSecurityHeaders()`,
 `app.enableCsrfProtection()`, and the `return503OnClosing` option.
 
