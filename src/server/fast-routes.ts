@@ -24,6 +24,7 @@ export interface FastPathOptions {
  */
 export class FastRoutes {
 	private catchAllMiddleware = false
+	private readonly honoFetch: Hono['fetch']
 	private readonly honoGetPath: Hono['getPath']
 	private readonly hono: Hono
 	private notFound?: NotFoundHandler
@@ -32,6 +33,7 @@ export class FastRoutes {
 	private readonly routes: RouteRegistry
 
 	constructor({ hono, requestLayer, routes }: FastPathOptions) {
+		this.honoFetch = hono.fetch
 		this.honoGetPath = hono.getPath
 		this.hono = hono
 		this.requestLayer = requestLayer
@@ -42,6 +44,15 @@ export class FastRoutes {
 			return setNotFoundHandler(handler)
 		}
 		hono.notFound = notFound
+	}
+
+	/**
+	 * Whether a server's `fetch` is Hono's own. A fast path only stands in for
+	 * Hono's own `fetch`; an app that replaced `hono.fetch` before the server
+	 * was created keeps every request on its replacement.
+	 */
+	isHonoFetch(fetch: Hono['fetch']) {
+		return fetch === this.honoFetch
 	}
 
 	/** The not-found handler `hono.fetch()` would pass to the context. */

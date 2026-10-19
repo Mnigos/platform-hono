@@ -4,7 +4,7 @@
 
 Faster request handling on Node.js and Bun.
 
-- `GET` requests to Nest routes without Nest middleware, CORS, static assets, or other Hono middleware in front of them take a fast path. On Node.js it skips `@hono/node-server`'s Fetch request/response round trip, on Bun it skips `hono.fetch()`'s middleware chain, and on both it skips Hono's promise plumbing between layers. The fast paths check the installed Hono (and on Node.js `@hono/node-server`) once at startup and turn themselves off when they do not behave as expected; every other request is handled as before.
+- `GET` requests to Nest routes without Nest middleware, CORS, static assets, or other Hono middleware in front of them take a fast path. On Node.js it skips `@hono/node-server`'s Fetch request/response round trip, on Bun it skips `hono.fetch()`'s middleware chain, and on both it skips Hono's promise plumbing between layers. The fast paths check the installed Hono (and on Node.js `@hono/node-server`) once at startup and turn themselves off when they do not behave as expected, or when the app replaced `hono.fetch` before the server was created; every other request is handled as before.
 - NestJS 12 on Node.js no longer spends most of its time in garbage collection: the adapter's per-request objects are now built so that V8 does not allocate them straight in old space.
 
 Behaviour changes:

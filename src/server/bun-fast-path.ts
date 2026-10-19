@@ -42,21 +42,27 @@ export class BunFastPath {
 	}
 
 	/**
-	 * The `fetch` handler for `Bun.serve`: `hono.fetch()` with the fast path
-	 * in front of it.
+	 * Puts the fast path in front of the server's `fetch` handler, which is
+	 * `hono.fetch` as read when the server is created. A replaced
+	 * `hono.fetch` keeps every request on the replacement.
 	 */
-	readonly fetch = (request: Request, server: object) => {
+	wrapFetch(fetch: Hono['fetch']): Hono['fetch'] {
+		if (!this.fastRoutes.isHonoFetch(fetch)) return fetch
+		return (request, server) => this.serve(request, server, fetch)
+	}
+
+	private serve(request: Request, server: unknown, fetch: Hono['fetch']) {
 		const fastRoutes = this.fastRoutes
 		if (
 			request.method !== 'GET' ||
 			request.body !== null ||
 			!fastRoutes.isEnabled()
 		)
-			return this.hono.fetch(request, server)
+			return fetch(request, server)
 		const path = fastRoutes.getPath(request)
 		const matchResult = fastRoutes.match(path)
 		const route = matchResult && fastRoutes.getRoute(matchResult)
-		if (!route) return this.hono.fetch(request, server)
+		if (!route) return fetch(request, server)
 		const notFoundHandler = fastRoutes.notFoundHandler as NotFoundHandler
 		const exchange = new BunExchange(
 			new this.AdapterContext(
