@@ -1,122 +1,42 @@
-export const THEMES = ['light', 'dark'] as const
-export type Theme = (typeof THEMES)[number]
+import {
+	ADAPTERS,
+	type BenchmarkResults,
+	describeResults,
+	formatRun,
+	formatRuntimeScope,
+	getAdapterLabel,
+	getDefaultNestAdapters,
+	getNotes,
+	getRanking,
+	HIGHLIGHTED_ADAPTER,
+	numberFormat,
+} from './chart-data'
+import { renderIconSymbols } from './chart-icons'
+import {
+	getRowsBottom,
+	PADDING,
+	renderRow,
+	renderTrackHeader,
+	WIDTH,
+} from './chart-rows'
+import { renderGlowFilter, renderStyle, type Theme } from './chart-style'
 
-const ADAPTERS = [
-	'platform-hono',
-	'platform-fastify',
-	'platform-express',
-	'platform-node',
-] as const
-type Adapter = (typeof ADAPTERS)[number]
-const HIGHLIGHTED_ADAPTER = 'platform-hono' satisfies Adapter
-
-interface Setup {
-	load: string
-	machine: string
-	methodology: string
-	nest: string
-	warmupSeconds: number
-}
-
-interface NestBuild {
-	adapters: readonly string[]
-	nest: string
-	source: string
-	sourceUrl: string
-}
-
-interface UnreleasedAdapter {
-	adapter: string
-	nest: string
-	source: string
-	sourceUrl: string
-}
-
-interface Runtime {
-	name: string
-	requestsPerSecond: Partial<Record<Adapter, number>>
-}
-
-export interface BenchmarkResults {
-	nestBuilds: NestBuild[]
-	route: string
-	runtimes: Runtime[]
-	setup: Setup
-	unreleased: UnreleasedAdapter[]
-}
-
-interface Measurement {
-	adapter: Adapter
-	value: number
-}
-
-interface RuntimeLayout {
-	measurements: Measurement[]
-	runtime: Runtime
-	top: number
-}
-
-interface Palette {
-	accent: string
-	axis: string
-	context: string
-	muted: string
-	text: string
-}
-
-const PALETTES = {
-	light: {
-		accent: '#eb6834',
-		axis: '#d1d9e0',
-		context: '#afb8c1',
-		muted: '#59636e',
-		text: '#1f2328',
-	},
-	dark: {
-		accent: '#d95926',
-		axis: '#3d444d',
-		context: '#484f58',
-		muted: '#9198a1',
-		text: '#f0f6fc',
-	},
-} as const satisfies Record<Theme, Palette>
-
-const WIDTH = 640
-const BAR_START = 224
-const LABEL_GAP = 12
-const BAR_HEIGHT = 22
-const BAR_RADIUS = 4
-const ROW_HEIGHT = 32
-const VALUE_GAP = 8
-const VALUE_ROOM = 56
-const BAR_ROOM = WIDTH - BAR_START - VALUE_GAP - VALUE_ROOM
-const TEXT_CENTER_OFFSET = 5.5
-const GROUP_TOP = 36
-const GROUP_HEADER_HEIGHT = 36
-const GROUP_GAP = 16
-const NOTE_TOP = 40
+const PANEL_RADIUS = 16
+const TITLE_Y = 50
+const SUBTITLE_Y = 75
+const DOT_RADIUS = 4
+const NOTE_TOP = 36
 const NOTE_LINE_HEIGHT = 18
-const BOTTOM_PADDING = 10
-const RUNTIME_DELAY_MS = 150
-const VALUE_DELAY_MS = 900
-
-const numberFormat = new Intl.NumberFormat('en-US')
-const listFormat = new Intl.ListFormat('en-US')
-const round = (value: number) => Math.round(value * 10) / 10
+const BOTTOM_PADDING = 26
 
 /** Repository-relative path of the chart SVG for a theme. */
 export const getChartPath = (theme: Theme) => `assets/benchmark-${theme}.svg`
 
-/** Renders the animated benchmark bar chart for one color theme. */
+/** Renders the animated benchmark race chart for one color theme. */
 export function renderChartSvg(results: BenchmarkResults, theme: Theme) {
-	const layouts = layOutRuntimes(results)
-	const maxValue = Math.max(
-		...layouts.flatMap(layout =>
-			layout.measurements.map(measurement => measurement.value)
-		)
-	)
+	const ranking = getRanking(results)
 	const notes = getNotes(results)
-	const firstNoteY = Math.max(...layouts.map(getLastBarBottom)) + NOTE_TOP
+	const firstNoteY = getRowsBottom(ranking.length) + NOTE_TOP
 	const height =
 		firstNoteY + (notes.length - 1) * NOTE_LINE_HEIGHT + BOTTOM_PADDING
 
@@ -124,14 +44,22 @@ export function renderChartSvg(results: BenchmarkResults, theme: Theme) {
 		`<svg xmlns="http://www.w3.org/2000/svg" width="${WIDTH}" height="${height}" viewBox="0 0 ${WIDTH} ${height}" role="img" aria-labelledby="title desc">`,
 		`<title id="title">NestJS requests per second for ${results.route}</title>`,
 		`<desc id="desc">${describeResults(results)}</desc>`,
-		`<style>${renderStyle(PALETTES[theme])}</style>`,
-		`<text class="strong" x="0" y="18">Requests per second, ${results.route}<tspan class="muted"> · higher is better</tspan></text>`,
-		...layouts.map((layout, index) =>
-			renderRuntime(results, layout, index, maxValue)
+		`<style>${renderStyle(theme)}</style>`,
+		'<defs>',
+		...renderIconSymbols(),
+		renderGlowFilter(theme),
+		'</defs>',
+		`<rect class="panel" x="0.5" y="0.5" width="${WIDTH - 1}" height="${height - 1}" rx="${PANEL_RADIUS}"/>`,
+		`<text class="title" x="${PADDING}" y="${TITLE_Y}">NestJS, ${results.route} requests per second</text>`,
+		`<circle class="dot" cx="${PADDING + DOT_RADIUS}" cy="${SUBTITLE_Y - DOT_RADIUS}" r="${DOT_RADIUS}"/>`,
+		`<text x="${PADDING + 4 * DOT_RADIUS}" y="${SUBTITLE_Y}">one request: client → server → client · a faster ball serves more requests per second</text>`,
+		...renderTrackHeader(),
+		...ranking.flatMap((measurement, index) =>
+			renderRow(results, measurement, index)
 		),
 		...notes.map(
 			(note, index) =>
-				`<text class="note" x="0" y="${firstNoteY + index * NOTE_LINE_HEIGHT}">${note}</text>`
+				`<text class="note" x="${PADDING}" y="${firstNoteY + index * NOTE_LINE_HEIGHT}">${note}</text>`
 		),
 		'</svg>',
 		'',
@@ -145,91 +73,6 @@ export function renderReadme(readme: string, results: BenchmarkResults) {
 		'benchmark-table',
 		renderTable(results)
 	)
-}
-
-function renderStyle(palette: Palette) {
-	return [
-		`text{font:16px -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans",Helvetica,Arial,sans-serif;fill:${palette.muted}}`,
-		`.strong,text.hl{fill:${palette.text};font-weight:600}`,
-		'.muted{font-weight:400}',
-		`.muted,.note{fill:${palette.muted}}`,
-		'.note{font-size:13px}',
-		'.label{text-anchor:end}',
-		`.axis{stroke:${palette.axis}}`,
-		`.bar{fill:${palette.context};transform-box:fill-box;transform-origin:0 50%;animation:grow 1.2s cubic-bezier(.33,1,.68,1) var(--bar-delay) both}`,
-		`.bar.hl{fill:${palette.accent}}`,
-		'.value{animation:show .3s ease-out var(--value-delay) both}',
-		'@keyframes grow{from{transform:scaleX(0)}}',
-		'@keyframes show{from{opacity:0}}',
-		'@media (prefers-reduced-motion:reduce){.bar,.value{animation:none}}',
-	].join('\n')
-}
-
-function layOutRuntimes(results: BenchmarkResults) {
-	let top = GROUP_TOP
-
-	return results.runtimes.map(runtime => {
-		const layout: RuntimeLayout = {
-			measurements: getMeasurements(runtime),
-			runtime,
-			top,
-		}
-		top = getLastBarBottom(layout) + GROUP_GAP
-
-		return layout
-	})
-}
-
-function getMeasurements(runtime: Runtime) {
-	return ADAPTERS.flatMap(adapter => {
-		const value = runtime.requestsPerSecond[adapter]
-
-		return value === undefined ? [] : [{ adapter, value }]
-	}).toSorted((first, second) => second.value - first.value)
-}
-
-const getLastBarBottom = (layout: RuntimeLayout) =>
-	layout.top +
-	GROUP_HEADER_HEIGHT +
-	(layout.measurements.length - 1) * ROW_HEIGHT +
-	BAR_HEIGHT
-
-function renderRuntime(
-	results: BenchmarkResults,
-	layout: RuntimeLayout,
-	index: number,
-	maxValue: number
-) {
-	const firstBarTop = layout.top + GROUP_HEADER_HEIGHT
-	const barDelay = index * RUNTIME_DELAY_MS
-
-	return [
-		`<g style="--bar-delay:${barDelay}ms;--value-delay:${barDelay + VALUE_DELAY_MS}ms">`,
-		`<text class="strong" x="0" y="${layout.top + 24}">${layout.runtime.name}</text>`,
-		`<path class="axis" d="M${BAR_START - 0.5} ${firstBarTop - 4}V${getLastBarBottom(layout) + 4}"/>`,
-		...layout.measurements.map((measurement, row) =>
-			renderBar(results, measurement, firstBarTop + row * ROW_HEIGHT, maxValue)
-		),
-		'</g>',
-	].join('\n')
-}
-
-function renderBar(
-	results: BenchmarkResults,
-	{ adapter, value }: Measurement,
-	top: number,
-	maxValue: number
-) {
-	const end = round(BAR_START + (value / maxValue) * BAR_ROOM)
-	const textY = top + BAR_HEIGHT / 2 + TEXT_CENTER_OFFSET
-	const highlight = adapter === HIGHLIGHTED_ADAPTER ? ' hl' : ''
-	const radius = BAR_RADIUS
-
-	return [
-		`<text class="label${highlight}" x="${BAR_START - LABEL_GAP}" y="${textY}">${getAdapterLabel(results, adapter)}</text>`,
-		`<path class="bar${highlight}" d="M${BAR_START} ${top}H${round(end - radius)}a${radius} ${radius} 0 0 1 ${radius} ${radius}v${BAR_HEIGHT - 2 * radius}a${radius} ${radius} 0 0 1 -${radius} ${radius}H${BAR_START}Z"/>`,
-		`<text class="value${highlight}" x="${round(end + VALUE_GAP)}" y="${textY}">${(value / 1000).toFixed(1)}k</text>`,
-	].join('\n')
 }
 
 function renderPicture(results: BenchmarkResults) {
@@ -275,63 +118,6 @@ function renderTable(results: BenchmarkResults) {
 		'',
 		`Requests per second for \`${results.route}\` on ${machine} with \`${load}\` after a ${warmupSeconds} s warmup, following the [NestJS benchmark methodology](${methodology}). ${nestSentences.join(' ')} To measure the adapter on your machine, see [bench/README.md](bench/README.md).`,
 	].join('\n')
-}
-
-function describeResults(results: BenchmarkResults) {
-	const runtimes = results.runtimes.map(runtime => {
-		const values = getMeasurements(runtime).map(
-			({ adapter, value }) =>
-				`${getAdapterLabel(results, adapter)} ${numberFormat.format(value)}`
-		)
-
-		return `${runtime.name}: ${values.join(', ')}.`
-	})
-
-	return `Bar chart of NestJS requests per second for ${results.route}, higher is better. ${runtimes.join(' ')} ${getNotes(results).join('. ')}.`
-}
-
-function getNotes(results: BenchmarkResults) {
-	const { machine, nest, load, warmupSeconds } = results.setup
-
-	return [
-		`${machine} · ${load}, ${warmupSeconds} s warmup`,
-		`${getDefaultNestAdapters(results).join(', ')}: NestJS ${nest}`,
-		...results.nestBuilds.map(
-			build =>
-				`${build.adapters.join(', ')}: NestJS ${build.nest} from ${build.source}`
-		),
-		...results.unreleased.map(
-			entry =>
-				`${entry.adapter} (unreleased): NestJS ${entry.nest} from ${entry.source}, ${formatRuntimeScope(results, entry.adapter)}`
-		),
-	]
-}
-
-const findUnreleased = (results: BenchmarkResults, adapter: string) =>
-	results.unreleased.find(entry => entry.adapter === adapter)
-
-function getDefaultNestAdapters(results: BenchmarkResults) {
-	const listed = [
-		...results.nestBuilds.flatMap(build => build.adapters),
-		...results.unreleased.map(entry => entry.adapter),
-	]
-
-	return ADAPTERS.filter(adapter => !listed.includes(adapter))
-}
-
-const formatRun = (adapters: readonly string[]) =>
-	`${listFormat.format(adapters)} ${adapters.length === 1 ? 'runs' : 'run'}`
-
-const getAdapterLabel = (results: BenchmarkResults, adapter: Adapter) =>
-	findUnreleased(results, adapter) ? `${adapter} (unreleased)` : adapter
-
-function formatRuntimeScope(results: BenchmarkResults, adapter: string) {
-	const names = results.runtimes
-		.filter(runtime => Object.hasOwn(runtime.requestsPerSecond, adapter))
-		.map(runtime => runtime.name)
-	const scope = listFormat.format(names)
-
-	return names.length < results.runtimes.length ? `${scope} only` : scope
 }
 
 function formatChange(value?: number, baseline?: number) {

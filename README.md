@@ -7,7 +7,7 @@ production.
 
 <picture>
 	<source media="(prefers-color-scheme: dark)" srcset="assets/benchmark-dark.svg">
-	<img alt="Bar chart of NestJS requests per second for GET /, higher is better. Bun: platform-hono 140,247, platform-node (unreleased) 121,062, platform-fastify 105,053, platform-express 88,305. Node.js: platform-node (unreleased) 109,965, platform-fastify 103,645, platform-hono 100,424, platform-express 67,547. Apple M4 · wrk -t4 -c100, 3 s warmup. platform-hono: NestJS 12.1.3. platform-fastify, platform-express: NestJS 12.1.2 from nestjs/nest#18063. platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Bun and Node.js." src="assets/benchmark-light.svg" width="640">
+	<img alt="Race chart of NestJS requests per second for GET /, fastest first, where a faster ball serves more requests per second: platform-hono on Bun 140,247, platform-node (unreleased) on Bun 121,062, platform-node (unreleased) on Node.js 109,965, platform-fastify on Bun 105,053, platform-fastify on Node.js 103,645, platform-hono on Node.js 100,424, platform-express on Bun 88,305, platform-express on Node.js 67,547. Apple M4 · wrk -t4 -c100, 3 s warmup. platform-hono: NestJS 12.1.3. platform-fastify, platform-express: NestJS 12.1.2 from nestjs/nest#18063. platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Bun and Node.js." src="assets/benchmark-light.svg" width="880">
 </picture>
 
 <!-- benchmark-chart:end -->
