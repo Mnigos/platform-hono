@@ -302,7 +302,12 @@ export class WebhookController {
 
 Adapter-provided request fields include `body`, `rawBody`, `params`, `query`,
 `headers`, `ip`, and `baseUrl`. `req.headers`, and `req.ip` on Bun or with `trustProxy`,
-are computed on first read. After a body is parsed, `req.raw` is an unread copy
+are computed on first read. On `GET` requests the fast path serves (Nest routes
+without Nest middleware, CORS, static assets, or other Hono middleware in front
+of them), `req.headers`, `req.ip`, `req.socket` (Node.js), `ctx.raw`, and
+`ctx.res` come from an adapter-owned prototype instead of own properties: they
+read the same, but `Object.keys()`, object spread, and `JSON.stringify()` do not
+list them. After a body is parsed, `req.raw` is an unread copy
 of the request, created on first access, so consumers such as oRPC can still
 read the body.
 

@@ -8,7 +8,7 @@ import { type FastPathOptions, FastRoutes } from './fast-routes'
 import {
 	type ContextClass,
 	ContextOptionsRecord,
-	getContextClass,
+	getAdapterContextClass,
 } from './hono-context'
 import {
 	createAbortOnClose,
@@ -37,7 +37,7 @@ interface NodeEnv {
 }
 
 interface FastPathRuntime {
-	HonoContext: ContextClass
+	AdapterContext: ContextClass
 	internals: NodeServerInternals
 	writeCachedResponse?: CachedResponseWriter
 }
@@ -183,7 +183,7 @@ export class NodeFastPath {
 		env.incoming = incoming
 		env.outgoing = outgoing
 		const exchange = new NodeExchange(
-			new this.runtime.HonoContext(
+			new this.runtime.AdapterContext(
 				request,
 				new ContextOptionsRecord(env, matchResult, notFoundHandler, path)
 			),
@@ -233,10 +233,10 @@ export function createNodeFastPath(options: FastPathOptions) {
 	if (typeof Bun !== 'undefined' || options.adapterOptions.runtime === 'bun')
 		return
 	const internals = getNodeServerInternals()
-	const HonoContext = getContextClass()
-	if (!(internals && HonoContext)) return
+	const AdapterContext = getAdapterContextClass(true)
+	if (!(internals && AdapterContext)) return
 	return new NodeFastPath(options, {
-		HonoContext,
+		AdapterContext,
 		internals,
 		writeCachedResponse: getCachedResponseWriter(internals.responseCacheKey),
 	})

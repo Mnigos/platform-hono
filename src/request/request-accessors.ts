@@ -1,6 +1,10 @@
 import type { Context } from 'hono'
 import { extractClientIp } from '../helpers/client-ip'
 import { getNestHonoRequest, type NestHonoRequest } from '../helpers/request'
+import {
+	createResponseReadsDescriptor,
+	observeResponseReads,
+} from '../response/context-tracking'
 import { getSseBridge } from '../response/sse-bridge'
 import {
 	defineValue,
@@ -79,6 +83,43 @@ export function defineOwnAccessors(
 	if (req.headers === undefined)
 		Object.defineProperty(req, 'headers', REQUEST_ACCESSORS.headers)
 	Object.defineProperty(ctx, 'raw', CONTEXT_RAW_ACCESSOR)
+	observeResponseReads(ctx)
 	if (state.incoming?.socket && !req.socket)
 		Object.defineProperty(req, 'socket', SOCKET_ACCESSOR)
+}
+
+const ADAPTER_CONTEXT = Symbol('platformHonoAdapterContext')
+
+interface MarkedContext extends Context {
+	[ADAPTER_CONTEXT]?: true
+}
+
+/**
+ * Whether a context was created from an adapter-owned Context class, whose
+ * prototypes already carry the accessors `defineOwnAccessors()` defines.
+ */
+export function isAdapterContext(ctx: Context) {
+	return (ctx as MarkedContext)[ADAPTER_CONTEXT] === true
+}
+
+/**
+ * Members of an adapter-owned HonoRequest prototype: the accessors
+ * `defineOwnAccessors()` defines on other requests, with `socket` on Node.js.
+ */
+export function getAdapterRequestMembers(withSocket: boolean) {
+	return withSocket
+		? { ...REQUEST_ACCESSORS, socket: SOCKET_ACCESSOR }
+		: REQUEST_ACCESSORS
+}
+
+/**
+ * Members of an adapter-owned Context prototype: the SSE facade `ctx.raw`,
+ * `ctx.res` recording reads, and the mark `isAdapterContext()` checks.
+ */
+export function getAdapterContextMembers(honoPrototype: object) {
+	return {
+		[ADAPTER_CONTEXT]: { value: true },
+		raw: CONTEXT_RAW_ACCESSOR,
+		res: createResponseReadsDescriptor(honoPrototype),
+	} satisfies PropertyDescriptorMap
 }
