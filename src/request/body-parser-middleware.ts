@@ -5,11 +5,8 @@ import {
 } from '../helpers/body-parser'
 import type { HonoAdapterOptions } from '../options'
 import { getContentType } from './request-headers'
-import {
-	getRequestState,
-	shouldSkipBodyParser,
-	syncRawRequest,
-} from './request-state'
+import { getRequestState, shouldSkipBodyParser } from './request-state'
+import { syncRawRequest } from './request-state-core'
 
 interface ParserMiddlewareOptions {
 	adapterOptions: HonoAdapterOptions

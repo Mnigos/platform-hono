@@ -2,7 +2,8 @@ import { RequestMethod } from '@nestjs/common'
 import type { RequestHandler } from '@nestjs/common/interfaces/http/http-server.interface'
 import type { Context, Hono, MiddlewareHandler } from 'hono'
 import type { HonoAdapterOptions } from '../options'
-import { getRequestState, syncRawRequest } from '../request/request-state'
+import { getRequestState } from '../request/request-state'
+import { syncRawRequest } from '../request/request-state-core'
 import { setRouteParams } from '../request/route-params'
 import {
 	createRouteHandler,

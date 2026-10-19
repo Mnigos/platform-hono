@@ -3,7 +3,7 @@ import { PassThrough, Readable } from 'node:stream'
 import type { Context } from 'hono'
 import { getBunServer } from '../helpers/bun-server'
 import { finalizeResponse } from '../helpers/response'
-import type { RequestState } from '../request/request-state'
+import type { RequestState } from '../request/request-state-core'
 
 export interface HonoSseWritable extends PassThrough {
 	flushHeaders: () => void

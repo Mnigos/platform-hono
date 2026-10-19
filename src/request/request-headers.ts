@@ -1,6 +1,6 @@
 import type { Context } from 'hono'
 import { getBunServer } from '../helpers/bun-server'
-import type { RequestState } from './request-state'
+import type { RequestState } from './request-state-core'
 import type { NodeSocketLike } from './socket-bridge'
 
 type Listener = (...args: unknown[]) => void

@@ -1,17 +1,10 @@
 import type { Context } from 'hono'
-import { extractClientIp } from '../helpers/client-ip'
 import { isPathMatch } from '../helpers/path-matching'
 import { getNestHonoRequest, type NestHonoRequest } from '../helpers/request'
 import type { HonoAdapterOptions } from '../options'
-import {
-	type ContextTracking,
-	trackContext,
-} from '../response/context-tracking'
-import {
-	getResponseHeaders,
-	getSseBridge,
-	type SseBridge,
-} from '../response/sse-bridge'
+import { trackContext } from '../response/context-tracking'
+import { getResponseHeaders } from '../response/sse-bridge'
+import { defineOwnAccessors } from './request-accessors'
 import {
 	getNodeBindings,
 	getRequestHeader,
@@ -20,164 +13,15 @@ import {
 	readRequestHeader,
 } from './request-headers'
 import {
-	createRequestSocketBridge,
-	type RequestSocketBridge,
-} from './socket-bridge'
-
-type Listener = (...args: unknown[]) => void
-
-/**
- * Per-request adapter state, computed once and shared by every middleware and
- * route layer instead of being recomputed per layer.
- */
-export interface RequestState extends ContextTracking {
-	contentType?: string | null
-	ctx: Context
-	currentRaw?: Request
-	headers?: Record<string, string>
-	headersSource?: Request
-	incoming?: NodeIncoming
-	ip?: string | null
-	method: string
-	on: (event: string, listener: Listener) => unknown
-	options: HonoAdapterOptions
-	pathname: string
-	pendingRawRequest?: () => Request
-	rawRequest: Request
-	routeParams?: Record<string, string>
-	skipBodyParser?: boolean
-	socketBridge?: RequestSocketBridge
-	sse?: SseBridge
-	sseWaiter?: (response: Response) => void
-}
-
-const REQUEST_STATE = Symbol('platformHonoRequestState')
-
-interface StateCarrier {
-	on?: unknown
-	socket?: unknown
-	[REQUEST_STATE]: RequestState
-}
-
-function getSocketBridge(state: RequestState) {
-	const socket = state.incoming?.socket
-	if (!socket) return
-	state.socketBridge ??= createRequestSocketBridge(socket)
-	return state.socketBridge
-}
-
-function defineValue(target: object, name: string, value: unknown) {
-	Object.defineProperty(target, name, {
-		configurable: true,
-		enumerable: true,
-		value,
-		writable: true,
-	})
-}
-
-const REQUEST_ACCESSORS = {
-	headers: {
-		configurable: true,
-		enumerable: true,
-		get(this: StateCarrier) {
-			const state = this[REQUEST_STATE]
-			const source = getCurrentRequest(state)
-			if (!state.headers || state.headersSource !== source) {
-				state.headers = Object.fromEntries(source.headers)
-				state.headersSource = source
-			}
-			return state.headers
-		},
-		set(this: StateCarrier, value: unknown) {
-			defineValue(this, 'headers', value)
-		},
-	},
-	ip: {
-		configurable: true,
-		enumerable: true,
-		get(this: StateCarrier) {
-			const state = this[REQUEST_STATE]
-			if (state.ip === undefined)
-				state.ip =
-					extractClientIp(state.ctx, state.options, state.rawRequest) ?? null
-			return state.ip ?? undefined
-		},
-		set(this: StateCarrier, value: unknown) {
-			defineValue(this, 'ip', value)
-		},
-	},
-} as const satisfies PropertyDescriptorMap
-
-const LAZY_RAW_ACCESSOR = {
-	configurable: true,
-	enumerable: true,
-	get(this: StateCarrier) {
-		return materializeRawRequest(this[REQUEST_STATE])
-	},
-	set(this: StateCarrier, value: unknown) {
-		const state = this[REQUEST_STATE]
-		state.pendingRawRequest = undefined
-		defineValue(this, 'raw', value)
-		syncRawRequest(state)
-	},
-} as const satisfies PropertyDescriptor
-
-function materializeRawRequest(state: RequestState) {
-	const { ctx, pendingRawRequest } = state
-	state.pendingRawRequest = undefined
-	const rawRequest = pendingRawRequest ? pendingRawRequest() : state.rawRequest
-	defineValue(ctx.req, 'raw', rawRequest)
-	syncRawRequest(state)
-	return rawRequest
-}
-
-/**
- * Replaces `ctx.req.raw` with a request built on first access, so an unread
- * copy of an already consumed body is only created when something reads it.
- * Falls back to an immediate replacement outside adapter-managed requests.
- */
-export function replaceRawRequest(
-	ctx: Context,
-	createRawRequest: () => Request
-) {
-	const state = (
-		getNestHonoRequest(ctx.req) as NestHonoRequest & Partial<StateCarrier>
-	)[REQUEST_STATE]
-	if (!state) {
-		ctx.req.raw = createRawRequest()
-		return
-	}
-	state.pendingRawRequest = createRawRequest
-	Object.defineProperty(ctx.req, 'raw', LAZY_RAW_ACCESSOR)
-}
-
-const SOCKET_ACCESSOR = {
-	configurable: true,
-	enumerable: true,
-	get(this: StateCarrier) {
-		return getSocketBridge(this[REQUEST_STATE])?.socket
-	},
-	set(this: StateCarrier, value: unknown) {
-		defineValue(this, 'socket', value)
-	},
-} as const satisfies PropertyDescriptor
-
-function getContextState(ctx: Context) {
-	return (getNestHonoRequest(ctx.req) as NestHonoRequest & StateCarrier)[
-		REQUEST_STATE
-	]
-}
-
-const CONTEXT_RAW_ACCESSOR = {
-	configurable: true,
-	enumerable: true,
-	get(this: Context) {
-		return getSseBridge(getContextState(this)).stream
-	},
-	set(this: Context, value: unknown) {
-		defineValue(this, 'raw', value)
-	},
-} as const satisfies PropertyDescriptor
+	getExistingState,
+	getSocketBridge,
+	getUrlPathname,
+	type Listener,
+	REQUEST_STATE,
+	type RequestState,
+	type StateCarrier,
+	syncRawRequest,
+} from './request-state-core'
 
 function requestOn(state: RequestState, event: string, listener: Listener) {
 	const { ctx } = state
@@ -241,61 +85,6 @@ class RequestStateRecord implements RequestState {
 }
 
 /**
- * Returns the path of an already serialized request URL without parsing it
- * again with `new URL()`.
- */
-export function getUrlPathname(url: string) {
-	const start = url.indexOf('/', url.indexOf(':') + 3)
-	if (start === -1) return '/'
-	let end = start
-	while (end < url.length) {
-		const charCode = url.charCodeAt(end)
-		if (charCode === 63 || charCode === 35) break
-		end += 1
-	}
-	return url.slice(start, end)
-}
-
-/**
- * Recomputes request metadata after middleware replaced `ctx.req.raw`, for
- * example to rewrite the URL. The original transport request stays in
- * `state.rawRequest` for runtime APIs such as Bun's `requestIP()`.
- */
-/**
- * The request Nest-facing metadata describes: the replacement installed by
- * middleware, or the server's request. The adapter's own unread copy of a
- * parsed body has the same headers, so it is not materialized for this.
- */
-function getCurrentRequest(state: RequestState) {
-	if (state.pendingRawRequest) return state.currentRaw ?? state.rawRequest
-	return state.ctx.req.raw
-}
-
-function adoptReplacedRequest(state: RequestState, rawRequest: Request) {
-	state.currentRaw = rawRequest
-	state.contentType = undefined
-	state.method = rawRequest.method
-	state.pathname = getUrlPathname(rawRequest.url)
-	state.skipBodyParser = undefined
-	getNestHonoRequest(state.ctx.req).baseUrl = state.pathname
-}
-
-/**
- * Attaches the Nest `req.on()` bridge and, on Node.js, the lazy socket bridge
- * to the current raw request. Call it again after `ctx.req.raw` is replaced.
- */
-export function syncRawRequest(state: RequestState) {
-	if (state.pendingRawRequest) return
-	const rawRequest = state.ctx.req.raw as Request & Partial<StateCarrier>
-	if (rawRequest[REQUEST_STATE] === state) return
-	if (rawRequest !== state.rawRequest) adoptReplacedRequest(state, rawRequest)
-	rawRequest[REQUEST_STATE] = state
-	rawRequest.on = state.on
-	if (state.incoming?.socket && !rawRequest.socket)
-		Object.defineProperty(rawRequest, 'socket', SOCKET_ACCESSOR)
-}
-
-/**
  * Returns the request state, creating it on first use. Request fields Nest
  * reads (`headers`, `ip`, `baseUrl`, `on`) are attached once; `ip` and
  * `headers` are computed only when read. `query` lives on the Nest request
@@ -309,19 +98,10 @@ export function getRequestState(ctx: Context, options: HonoAdapterOptions) {
 
 	const state: RequestState = new RequestStateRecord(ctx, options)
 	req[REQUEST_STATE] = state
-	if (req.ip === undefined) {
-		if (state.incoming && !options.trustProxy)
-			req.ip = state.incoming.socket?.remoteAddress || undefined
-		else Object.defineProperty(req, 'ip', REQUEST_ACCESSORS.ip)
-	}
-	if (req.headers === undefined)
-		Object.defineProperty(req, 'headers', REQUEST_ACCESSORS.headers)
-	Object.defineProperty(ctx, 'raw', CONTEXT_RAW_ACCESSOR)
+	defineOwnAccessors(ctx, req, state)
 	trackContext(ctx, state)
 	;(ctx as Context & { getHeaders?: unknown }).getHeaders = () =>
 		getResponseHeaders(ctx)
-	if (state.incoming?.socket && !req.socket)
-		Object.defineProperty(req, 'socket', SOCKET_ACCESSOR)
 	req.baseUrl = state.pathname
 	req.on = state.on
 	syncRawRequest(state)
@@ -336,12 +116,6 @@ export function shouldSkipBodyParser(state: RequestState) {
 		isPathMatch(state.pathname, path)
 	)
 	return state.skipBodyParser
-}
-
-function getExistingState(ctx: Context) {
-	return (
-		getNestHonoRequest(ctx.req) as NestHonoRequest & Partial<StateCarrier>
-	)[REQUEST_STATE]
 }
 
 /**

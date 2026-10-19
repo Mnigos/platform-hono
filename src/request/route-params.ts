@@ -1,5 +1,5 @@
 import { getNestHonoRequest } from '../helpers/request'
-import type { RequestState } from './request-state'
+import type { RequestState } from './request-state-core'
 
 interface OptionalParameterSuffixLike {
 	name: string
