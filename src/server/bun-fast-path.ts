@@ -24,8 +24,8 @@ class BunExchange extends FastExchange {
  * router, an adapter-owned `Context` (see `getAdapterContextClass`), and the
  * adapter's request state, with the route run by `FastExchange` with
  * `hono.fetch()`'s semantics minus its promise plumbing. The body layer is
- * skipped: Bun never exposes a `GET` body, and a `GET` without a body is not
- * parsed. Requests it does not cover go to `hono.fetch()` unchanged.
+ * skipped: Bun never exposes a `GET` body, and `GET` requests are not parsed.
+ * Requests it does not cover go to `hono.fetch()` unchanged.
  */
 export class BunFastPath {
 	private readonly AdapterContext: ContextClass
