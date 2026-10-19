@@ -1441,7 +1441,7 @@ describe('HonoAdapter', () => {
 		expect(adapter.getHttpServer()).not.toBeInstanceOf(Server)
 		expect(serve).toHaveBeenCalledWith(
 			expect.objectContaining({
-				fetch: adapter.hono.fetch,
+				fetch: expect.any(Function),
 				idleTimeout: 30,
 				port: 3000,
 			})

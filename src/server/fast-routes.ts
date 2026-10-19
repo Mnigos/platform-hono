@@ -24,7 +24,7 @@ export interface FastPathOptions {
  */
 export class FastRoutes {
 	private catchAllMiddleware = false
-	private readonly getPath: Hono['getPath']
+	private readonly honoGetPath: Hono['getPath']
 	private readonly hono: Hono
 	private notFound?: NotFoundHandler
 	private readonly requestLayer: MiddlewareHandler
@@ -32,7 +32,7 @@ export class FastRoutes {
 	private readonly routes: RouteRegistry
 
 	constructor({ hono, requestLayer, routes }: FastPathOptions) {
-		this.getPath = hono.getPath
+		this.honoGetPath = hono.getPath
 		this.hono = hono
 		this.requestLayer = requestLayer
 		this.routes = routes
@@ -57,9 +57,17 @@ export class FastRoutes {
 	isEnabled() {
 		return (
 			this.notFound !== undefined &&
-			this.hono.getPath === this.getPath &&
+			this.hono.getPath === this.honoGetPath &&
 			!this.hasCatchAllMiddleware()
 		)
+	}
+
+	/**
+	 * The path `hono.fetch()` routes a request by. While `isEnabled()`, this is
+	 * Hono's default `getPath`, which only reads the request URL.
+	 */
+	getPath(request: Request) {
+		return this.honoGetPath(request)
 	}
 
 	/**
