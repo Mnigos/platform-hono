@@ -7,11 +7,11 @@ import {
 } from '../helpers/response'
 import type { HonoAdapterOptions } from '../options'
 import { getNestRequest } from '../request/nest-request'
+import { getRequestState } from '../request/request-state'
 import {
-	getRequestState,
 	type RequestState,
 	syncRawRequest,
-} from '../request/request-state'
+} from '../request/request-state-core'
 import { setRouteParams } from '../request/route-params'
 import type { OptionalParameterSuffix } from './route-paths'
 

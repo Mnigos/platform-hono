@@ -3,7 +3,8 @@ import { enforceRequestBodyLimit } from '../helpers/body-parser'
 import { getRequestSizeLimit } from '../helpers/path-matching'
 import type { HonoAdapterOptions } from '../options'
 import { mayHaveRequestBody } from './request-headers'
-import { getRequestState, syncRawRequest } from './request-state'
+import { getRequestState } from './request-state'
+import { syncRawRequest } from './request-state-core'
 
 type Next = () => Promise<void>
 

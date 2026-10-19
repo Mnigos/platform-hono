@@ -10,8 +10,8 @@ import {
 import {
 	getCurrentRequestHeader,
 	hasTrustedFraming,
-	replaceRawRequest,
 } from '../request/request-state'
+import { replaceRawRequest } from '../request/request-state-core'
 import {
 	assertMultipartFormLimits,
 	createMultipartLimitScanner,
