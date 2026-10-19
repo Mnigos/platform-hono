@@ -441,9 +441,9 @@ describe('body stream integration', () => {
 	})
 
 	test.each([
-		'GET',
-		'HEAD',
-	])('currently parses a bodyless %s with JSON Content-Type as an empty object', async method => {
+		['GET', undefined],
+		['HEAD', {}],
+	])('gives a bodyless %s with JSON Content-Type the body %j', async (method, expected) => {
 		const adapter = new HonoAdapter()
 		adapter.registerParserMiddleware('', false)
 		const seen: unknown[] = []
@@ -459,7 +459,7 @@ describe('body stream integration', () => {
 				headers: { 'content-type': 'application/json' },
 			})
 			expect(response.status).toBe(200)
-			expect(seen).toEqual([{}])
+			expect(seen).toEqual([expected])
 			if (method === 'HEAD') expect(await response.text()).toBe('')
 		} finally {
 			await app.close()

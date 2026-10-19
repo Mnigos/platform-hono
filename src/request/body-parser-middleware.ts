@@ -4,7 +4,7 @@ import {
 	shouldParseRequestBody,
 } from '../helpers/body-parser'
 import type { HonoAdapterOptions } from '../options'
-import { getContentType } from './request-headers'
+import { getContentType, mayHaveRequestBody } from './request-headers'
 import { getRequestState, shouldSkipBodyParser } from './request-state'
 import { syncRawRequest } from './request-state-core'
 
@@ -17,7 +17,8 @@ interface ParserMiddlewareOptions {
 /**
  * Creates one Hono middleware for one or more parser types. The first
  * applicable type parses the body; requests without a matching `Content-Type`
- * continue synchronously, without an extra async frame.
+ * and `GET` requests without a body continue synchronously, without an extra
+ * async frame or reading the `Content-Type`.
  */
 export function createParserMiddleware({
 	adapterOptions,
@@ -27,6 +28,7 @@ export function createParserMiddleware({
 	return (ctx: Context, next: () => Promise<void>) => {
 		const state = getRequestState(ctx, adapterOptions)
 		syncRawRequest(state)
+		if (state.method === 'GET' && !mayHaveRequestBody(state)) return next()
 		const contentType = getContentType(state)
 		if (contentType === undefined) return next()
 		const parserType = parserTypes.find(type =>
