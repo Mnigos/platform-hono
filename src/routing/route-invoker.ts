@@ -148,19 +148,24 @@ const NO_SUFFIXES: OptionalParameterSuffix[] = []
  * Runs a Nest route or middleware handler for a Hono context: sets request
  * params, calls the handler, and reports the finalized response through
  * `resolve` once the handler finishes or an SSE stream starts, or the error
- * through `reject`.
+ * through `reject`. `isLastLayer` tells that no later layer sets params.
  */
 export function runRoute(
 	ctx: Context,
 	options: RouteHandlerOptions,
 	next: () => Promise<void>,
 	resolve: ResolveRoute,
-	reject: RejectRoute
+	reject: RejectRoute,
+	isLastLayer = false
 ) {
 	const { adapterOptions } = options
 	const state = getRequestState(ctx, adapterOptions)
 	syncRawRequest(state)
-	setRouteParams(state, options.optionalParameterSuffixes ?? NO_SUFFIXES)
+	setRouteParams(
+		state,
+		options.optionalParameterSuffixes ?? NO_SUFFIXES,
+		isLastLayer
+	)
 	let settled = false
 	let streaming = false
 	const finish = (response: Response | undefined) => {
