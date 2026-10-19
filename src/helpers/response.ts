@@ -30,6 +30,12 @@ class FinalizedResponse {
 }
 
 const FINALIZED_RESPONSE = Symbol('platformHonoFinalizedResponse')
+/**
+ * `Content-Type` of direct JSON replies built with the native `Response`,
+ * which copies init headers, so one `Headers` instance serves every reply and
+ * spares converting a header object per reply.
+ */
+const JSON_HEADERS = new Headers({ 'content-type': 'application/json' })
 const FINALIZE_LISTENERS = Symbol('platformHonoFinalizeListeners')
 
 interface FinalizableContext extends Context {
@@ -168,7 +174,9 @@ function buildResponse(ctx: Context, body?: unknown): BuiltResponse {
  * `ctx.body()`/`ctx.newResponse()` without merging empty header sets. On
  * Node.js the plain header object lets `@hono/node-server` write the head
  * without converting a `Headers` instance. The header object is created per
- * response because `@hono/node-server` adds `Content-Length` to it.
+ * response because `@hono/node-server` adds `Content-Length` to it; the
+ * native `Response` (Bun, direct `hono.fetch()` calls) copies the shared
+ * `JSON_HEADERS` instead.
  */
 function buildDirectResponse(ctx: Context, body: unknown) {
 	const isJson = typeof body === 'object' && !(body instanceof Buffer)
@@ -181,6 +189,11 @@ function buildDirectResponse(ctx: Context, body: unknown) {
 	const status = tracking.statusCode ?? 200
 	if (!isJson)
 		return new ResponseClass(body as string, new DirectResponseInit(status))
+	if (ResponseClass === Response)
+		return new Response(
+			JSON.stringify(body),
+			new DirectResponseInit(status, JSON_HEADERS)
+		)
 	const headers: Record<string, string> = Object.create(Object.prototype)
 	headers['content-type'] = 'application/json'
 	return new ResponseClass(

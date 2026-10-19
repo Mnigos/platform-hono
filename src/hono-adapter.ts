@@ -33,7 +33,9 @@ import { ParserRegistry } from './request/parser-registry'
 import { createRequestLayer } from './request/request-layer'
 import { getRequestState } from './request/request-state'
 import { type RouteArguments, RouteRegistry } from './routing/route-registry'
+import { type BunFastPath, createBunFastPath } from './server/bun-fast-path'
 import { createServer, type HonoHttpServer } from './server/create-server'
+import type { FastPathOptions } from './server/fast-routes'
 import { createNodeFastPath, type NodeFastPath } from './server/node-fast-path'
 
 type VersionValue = Parameters<AbstractHttpAdapter['applyVersionFilter']>[1]
@@ -50,7 +52,7 @@ export class HonoAdapter extends AbstractHttpAdapter<
 	private readonly securityHooks: SecurityRequestHook[] = []
 	private readonly routes: RouteRegistry
 	private readonly parsers: ParserRegistry
-	private readonly fastPath?: NodeFastPath
+	private readonly fastPath?: BunFastPath | NodeFastPath
 
 	constructor(options: HonoAdapterOptions = {}) {
 		super(new Hono())
@@ -59,13 +61,15 @@ export class HonoAdapter extends AbstractHttpAdapter<
 		this.parsers = new ParserRegistry(this.hono, options, this.logger)
 		const requestLayer = createRequestLayer(options, this.securityHooks)
 		this.hono.use(requestLayer)
-		this.fastPath = createNodeFastPath({
+		const fastPathOptions: FastPathOptions = {
 			adapterOptions: options,
 			hono: this.hono,
 			requestLayer,
 			routes: this.routes,
 			securityHooks: this.securityHooks,
-		})
+		}
+		this.fastPath =
+			createNodeFastPath(fastPathOptions) ?? createBunFastPath(fastPathOptions)
 	}
 
 	get hono() {
