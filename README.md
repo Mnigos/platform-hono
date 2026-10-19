@@ -134,10 +134,10 @@ Request body parsing is enabled by default unless Nest is bootstrapped with
 `bodyParser: false`.
 
 The adapter parses JSON, text, form, and multipart request bodies and stores the
-parsed value on `req.body` for Nest controllers and decorators. A `GET` request
-without a body is not parsed, so its `req.body` stays `undefined` whatever its
-`Content-Type`. Bun never exposes `GET` request bodies, so there this applies to
-every `GET`.
+parsed value on `req.body` for Nest controllers and decorators. `GET` requests
+are not parsed, so their `req.body` stays `undefined` whatever their
+`Content-Type`: neither `Bun.serve` nor `@hono/node-server` exposes a `GET`
+request body.
 
 ```ts
 const app = await NestFactory.create(AppModule, new HonoAdapter(), {
