@@ -11,29 +11,32 @@ export function createSelfSignedCertificate() {
 	const directory = mkdtempSync(join(tmpdir(), 'platform-hono-tls-'))
 	const keyPath = join(directory, 'key.pem')
 	const certPath = join(directory, 'cert.pem')
-	execFileSync(
-		'openssl',
-		[
-			'req',
-			'-x509',
-			'-newkey',
-			'rsa:2048',
-			'-nodes',
-			'-keyout',
-			keyPath,
-			'-out',
-			certPath,
-			'-subj',
-			'/CN=localhost',
-			'-days',
-			'1',
-		],
-		{ stdio: 'ignore' }
-	)
-	const certificate = {
-		cert: readFileSync(certPath, 'utf8'),
-		key: readFileSync(keyPath, 'utf8'),
+	try {
+		execFileSync(
+			'openssl',
+			[
+				'req',
+				'-x509',
+				'-newkey',
+				'rsa:2048',
+				'-nodes',
+				'-keyout',
+				keyPath,
+				'-out',
+				certPath,
+				'-subj',
+				'/CN=localhost',
+				'-days',
+				'1',
+			],
+			{ stdio: 'ignore' }
+		)
+		const certificate = {
+			cert: readFileSync(certPath, 'utf8'),
+			key: readFileSync(keyPath, 'utf8'),
+		}
+		return certificate
+	} finally {
+		rmSync(directory, { force: true, recursive: true })
 	}
-	rmSync(directory, { force: true, recursive: true })
-	return certificate
 }
