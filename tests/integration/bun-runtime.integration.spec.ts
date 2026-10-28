@@ -1,15 +1,15 @@
 import 'reflect-metadata'
-import { execFileSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync } from 'node:fs'
 import { request, Server } from 'node:http'
-import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { PassThrough } from 'node:stream'
+import { Server as TlsServer } from 'node:tls'
 import { Module } from '@nestjs/common'
 import { NestFactory } from '@nestjs/core'
 import type { Context } from 'hono'
 import { HonoAdapter } from '../../src'
 import { startApp } from './fixtures/minimal-nest-app'
+import { createSelfSignedCertificate } from './fixtures/self-signed-certificate'
 
 interface SseContext extends Context {
 	raw: PassThrough & {
@@ -34,37 +34,6 @@ class EmptyModule {}
 const isBunRuntime = 'Bun' in globalThis
 const BUN_IDLE_SWEEP_MS = 8000
 
-function createSelfSignedCertificate() {
-	const directory = mkdtempSync(join(tmpdir(), 'platform-hono-tls-'))
-	const keyPath = join(directory, 'key.pem')
-	const certPath = join(directory, 'cert.pem')
-	execFileSync(
-		'openssl',
-		[
-			'req',
-			'-x509',
-			'-newkey',
-			'rsa:2048',
-			'-nodes',
-			'-keyout',
-			keyPath,
-			'-out',
-			certPath,
-			'-subj',
-			'/CN=localhost',
-			'-days',
-			'1',
-		],
-		{ stdio: 'ignore' }
-	)
-	const certificate = {
-		cert: readFileSync(certPath, 'utf8'),
-		key: readFileSync(keyPath, 'utf8'),
-	}
-	rmSync(directory, { force: true, recursive: true })
-	return certificate
-}
-
 describe.runIf(isBunRuntime)('Bun runtime integration', () => {
 	test('serves Nest routes through Bun.serve and reports the app URL', async () => {
 		const app = await startApp()
@@ -74,6 +43,7 @@ describe.runIf(isBunRuntime)('Bun runtime integration', () => {
 			const url = await app.getUrl()
 
 			expect(server).not.toBeInstanceOf(Server)
+			expect(server).not.toBeInstanceOf(TlsServer)
 			expect((server as ListeningServer).listening).toBe(true)
 			expect(url).toBe(app.baseUrl.replace('127.0.0.1', 'localhost'))
 
@@ -270,11 +240,16 @@ describe.runIf(isBunRuntime)('Bun runtime integration', () => {
 
 		try {
 			const url = await app.getUrl()
+
+			expect(app.adapter.getHttpServer()).toBeInstanceOf(TlsServer)
+			expect(url).toBe(
+				app.baseUrl.replace('http://127.0.0.1', 'https://localhost')
+			)
+
 			const response = await fetch(`${url}/hello/tls?q=secure`, {
 				tls: { rejectUnauthorized: false },
 			} as BunFetchInit)
 
-			expect(url.startsWith('https://localhost:')).toBe(true)
 			await expect(response.json()).resolves.toMatchObject({
 				id: 'tls',
 				query: 'secure',

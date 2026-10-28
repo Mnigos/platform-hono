@@ -95,7 +95,12 @@ through `node:http`, needs `runtime: 'node'`.
 
 HTTPS works through Nest `httpsOptions`. The Bun path accepts `key`, `cert`,
 `ca`, `passphrase`, `requestCert`, `rejectUnauthorized`, and `secureOptions`.
-Other options, such as `pfx`, throw during `NestFactory.create`.
+Other options, such as `pfx`, throw during `NestFactory.create`. With
+`httpsOptions` the wrapper is an `instanceof tls.Server`, like Node.js'
+`https.Server`, which NestJS 12.3 and later check to report `https://` from
+`app.getUrl()`. Bun's own `node:https` server is not a `tls.Server`, so with
+`runtime: 'node'` on Bun, NestJS 12.3 and later report `http://` for an HTTPS
+app.
 
 Bun closes connections that stay idle, including slow handlers that have not
 written a byte yet. The adapter sets Bun's `idleTimeout` to its maximum of 255

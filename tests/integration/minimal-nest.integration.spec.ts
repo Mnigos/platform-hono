@@ -1,5 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises'
 import { Agent, request, type Server } from 'node:http'
+import { Server as HttpsServer, get as httpsGet } from 'node:https'
 import type { Socket } from 'node:net'
 import { join } from 'node:path'
 import { HonoAdapter } from '../../src'
@@ -8,6 +9,7 @@ import {
 	getRequestCloseCalls,
 	startApp,
 } from './fixtures/minimal-nest-app'
+import { createSelfSignedCertificate } from './fixtures/self-signed-certificate'
 
 const isBunRuntime = 'Bun' in globalThis
 
@@ -52,6 +54,24 @@ function abortAfterFirstChunk(url: string) {
 		})
 		clientRequest.on('error', reject)
 		clientRequest.end()
+	})
+}
+
+function getOverTls(url: string) {
+	return new Promise<string>((resolve, reject) => {
+		const clientRequest = httpsGet(
+			url,
+			{ rejectUnauthorized: false },
+			response => {
+				const chunks: Buffer[] = []
+				response.on('data', chunk => chunks.push(Buffer.from(chunk)))
+				response.on('error', reject)
+				response.on('end', () =>
+					resolve(Buffer.concat(chunks).toString('utf8'))
+				)
+			}
+		)
+		clientRequest.on('error', reject)
 	})
 }
 
@@ -932,4 +952,25 @@ describe('minimal Nest integration', () => {
 			await app.close()
 		}
 	})
+
+	test.skipIf(isBunRuntime)(
+		'serves HTTPS with Nest httpsOptions and reports an https URL',
+		async () => {
+			const app = await startApp(new HonoAdapter(), {
+				httpsOptions: createSelfSignedCertificate(),
+			})
+
+			try {
+				const url = await app.getUrl()
+
+				expect(app.adapter.getHttpServer()).toBeInstanceOf(HttpsServer)
+				expect(new URL(url).protocol).toBe('https:')
+				expect(
+					JSON.parse(await getOverTls(`${url}/hello/tls?q=secure`))
+				).toMatchObject({ id: 'tls', query: 'secure' })
+			} finally {
+				await app.close()
+			}
+		}
+	)
 })
