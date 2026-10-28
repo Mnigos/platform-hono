@@ -1,6 +1,7 @@
 import { EventEmitter } from 'node:events'
 import type { ServerOptions as HttpsServerOptions } from 'node:https'
 import type { AddressInfo } from 'node:net'
+import { Server as TlsServer } from 'node:tls'
 import { DEFAULT_BUN_IDLE_TIMEOUT } from '../options'
 
 type FetchHandler = (
@@ -54,7 +55,8 @@ export function toBunTlsOptions(httpsOptions: HttpsServerOptions) {
  * graceful stop has started, so `forceCloseConnections` is applied by `close`.
  * A forced stop closes every socket at once, but its promise still waits for
  * running handlers, so `close` completes without waiting for it, like
- * Node.js `server.close()` after `closeAllConnections()`.
+ * Node.js `server.close()` after `closeAllConnections()`. With `httpsOptions`
+ * the server is also an `instanceof tls.Server`, like `https.Server`.
  */
 export class BunHttpServer extends EventEmitter {
 	private server?: Bun.Server<undefined>
@@ -69,7 +71,9 @@ export class BunHttpServer extends EventEmitter {
 		this.fetch = fetch
 		this.forceCloseConnections = options.forceCloseConnections ?? false
 		this.idleTimeout = options.idleTimeout ?? DEFAULT_BUN_IDLE_TIMEOUT
-		if (options.httpsOptions) this.tls = toBunTlsOptions(options.httpsOptions)
+		if (!options.httpsOptions) return
+		this.tls = toBunTlsOptions(options.httpsOptions)
+		Object.setPrototypeOf(this, BUN_HTTPS_SERVER_PROTOTYPE)
 	}
 
 	get listening() {
@@ -158,3 +162,16 @@ export class BunHttpServer extends EventEmitter {
 		}
 	}
 }
+
+/**
+ * Prototype of a `BunHttpServer` with `httpsOptions`: the class members on top
+ * of `tls.Server.prototype`, which `https.Server` also extends. NestJS 12.3+
+ * picks the `app.getUrl()` protocol with `httpServer instanceof tls.Server`
+ * instead of reading `httpsOptions`. Only the prototype is borrowed: TLS is
+ * served by `Bun.serve`, and the `BunHttpServer` members shadow the
+ * `tls.Server` ones.
+ */
+const BUN_HTTPS_SERVER_PROTOTYPE = Object.create(
+	TlsServer.prototype,
+	Object.getOwnPropertyDescriptors(BunHttpServer.prototype)
+) as BunHttpServer

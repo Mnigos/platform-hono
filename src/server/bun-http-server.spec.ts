@@ -1,3 +1,5 @@
+import { EventEmitter } from 'node:events'
+import { Server as TlsServer } from 'node:tls'
 import { BunHttpServer, toBunTlsOptions } from './bun-http-server'
 
 interface FakeBunServer {
@@ -169,6 +171,56 @@ describe('BunHttpServer', () => {
 		expect(serve).toHaveBeenCalledWith(
 			expect.objectContaining({ tls: { cert: 'cert', key: 'key' } })
 		)
+	})
+
+	test('is a tls.Server only with httpsOptions, like https.Server', () => {
+		const httpServer = new BunHttpServer(fetchHandler)
+		const httpsServer = new BunHttpServer(fetchHandler, {
+			httpsOptions: { cert: 'cert', key: 'key' },
+		})
+
+		expect(httpServer).not.toBeInstanceOf(TlsServer)
+		expect(httpsServer).toBeInstanceOf(TlsServer)
+		expect(httpsServer).toBeInstanceOf(EventEmitter)
+		expect(httpsServer.constructor).toBe(BunHttpServer)
+	})
+
+	test('listens, reports its address, and closes with httpsOptions', async () => {
+		const { bunServer, serve } = stubBunServe()
+		const server = new BunHttpServer(fetchHandler, {
+			forceCloseConnections: true,
+			httpsOptions: { cert: 'cert', key: 'key' },
+		})
+		const listeningCallback = vi.fn()
+		const closeEvent = waitForEvent(server, 'close')
+
+		expect(server.listening).toBe(false)
+		expect(server.address()).toBeNull()
+
+		server.listen(8443, '127.0.0.1', listeningCallback)
+		await waitForEvent(server, 'listening')
+
+		expect(serve).toHaveBeenCalledExactlyOnceWith({
+			fetch: fetchHandler,
+			hostname: '127.0.0.1',
+			idleTimeout: 255,
+			maxRequestBodySize: Number.MAX_SAFE_INTEGER,
+			port: 8443,
+			tls: { cert: 'cert', key: 'key' },
+		})
+		expect(listeningCallback).toHaveBeenCalledOnce()
+		expect(server.listening).toBe(true)
+		expect(server.address()).toEqual({
+			address: 'localhost',
+			family: 'IPv4',
+			port: 4321,
+		})
+
+		server.close()
+		await closeEvent
+
+		expect(bunServer.stop).toHaveBeenCalledExactlyOnceWith(true)
+		expect(server.listening).toBe(false)
 	})
 })
 
