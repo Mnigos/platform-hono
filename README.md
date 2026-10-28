@@ -404,9 +404,11 @@ The following Nest response features are intentionally deferred:
 | Static assets | Supported |
 | CORS | Supported |
 | Standard and WebDAV HTTP method decorators | Supported |
-| oRPC | Not yet verified |
-| better-auth | Planned |
-| nestjs-better-auth | Planned |
+| oRPC | Supported |
+| better-auth | Supported |
+| nestjs-better-auth | Supported |
 | Express/Fastify-style manual `@Res()` APIs | Deferred |
 | Nest versioning | Unsupported |
 | Nest views/templates | Unsupported |
+
+oRPC (`@orpc/nest`), better-auth and `@thallesp/nestjs-better-auth` run in production on [rigtch.fm](https://rigtch.fm) with this adapter.
