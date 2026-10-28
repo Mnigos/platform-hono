@@ -101,11 +101,11 @@ function renderTable(results: BenchmarkResults) {
 	})
 	const nestSentences = [
 		`${formatRun(getDefaultNestAdapters(results))} NestJS ${nest}.`,
-		...results.nestBuilds.map(
+		...(results.nestBuilds ?? []).map(
 			build =>
 				`${formatRun(build.adapters)} NestJS ${build.nest} from [${build.source}](${build.sourceUrl}).`
 		),
-		...results.unreleased.map(
+		...(results.unreleased ?? []).map(
 			entry =>
 				`The unreleased ${entry.adapter} runs NestJS ${entry.nest} from [${entry.source}](${entry.sourceUrl}), measured on ${formatRuntimeScope(results, entry.adapter)}.`
 		),

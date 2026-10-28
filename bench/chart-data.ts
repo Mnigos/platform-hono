@@ -35,11 +35,11 @@ interface Runtime {
 }
 
 export interface BenchmarkResults {
-	nestBuilds: NestBuild[]
+	nestBuilds?: NestBuild[]
 	route: string
 	runtimes: Runtime[]
 	setup: Setup
-	unreleased: UnreleasedAdapter[]
+	unreleased?: UnreleasedAdapter[]
 }
 
 export interface Measurement {
@@ -82,11 +82,11 @@ export function getNotes(results: BenchmarkResults) {
 	return [
 		`${machine} · ${load}, ${warmupSeconds} s warmup`,
 		`${getDefaultNestAdapters(results).join(', ')}: NestJS ${nest}`,
-		...results.nestBuilds.map(
+		...(results.nestBuilds ?? []).map(
 			build =>
 				`${build.adapters.join(', ')}: NestJS ${build.nest} from ${build.source}`
 		),
-		...results.unreleased.map(
+		...(results.unreleased ?? []).map(
 			entry =>
 				`${entry.adapter} (unreleased): NestJS ${entry.nest} from ${entry.source}, ${formatRuntimeScope(results, entry.adapter)}`
 		),
@@ -96,8 +96,8 @@ export function getNotes(results: BenchmarkResults) {
 /** Adapters that run the NestJS version of `setup.nest`. */
 export function getDefaultNestAdapters(results: BenchmarkResults) {
 	const listed = [
-		...results.nestBuilds.flatMap(build => build.adapters),
-		...results.unreleased.map(entry => entry.adapter),
+		...(results.nestBuilds ?? []).flatMap(build => build.adapters),
+		...(results.unreleased ?? []).map(entry => entry.adapter),
 	]
 
 	return ADAPTERS.filter(adapter => !listed.includes(adapter))
@@ -105,7 +105,7 @@ export function getDefaultNestAdapters(results: BenchmarkResults) {
 
 /** Adapter name, marked when the adapter is not released yet. */
 export const getAdapterLabel = (results: BenchmarkResults, adapter: Adapter) =>
-	results.unreleased.some(entry => entry.adapter === adapter)
+	results.unreleased?.some(entry => entry.adapter === adapter)
 		? `${adapter} (unreleased)`
 		: adapter
 

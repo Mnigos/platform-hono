@@ -1,6 +1,6 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="880" height="590" viewBox="0 0 880 590" role="img" aria-labelledby="title desc">
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="554" viewBox="0 0 880 554" role="img" aria-labelledby="title desc">
 <title id="title">NestJS requests per second for GET /</title>
-<desc id="desc">Race chart of NestJS requests per second for GET /, fastest first, where a faster ball serves more requests per second: platform-hono on Bun 140,247, platform-node (unreleased) on Bun 121,062, platform-node (unreleased) on Node.js 109,965, platform-fastify on Bun 105,053, platform-fastify on Node.js 103,645, platform-hono on Node.js 100,424, platform-express on Bun 88,305, platform-express on Node.js 67,547. Apple M4 · wrk -t4 -c100, 3 s warmup. platform-hono: NestJS 12.1.3. platform-fastify, platform-express: NestJS 12.1.2 from nestjs/nest#18063. platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Bun and Node.js.</desc>
+<desc id="desc">Race chart of NestJS requests per second for GET /, fastest first, where a faster ball serves more requests per second: platform-hono on Bun 141,294, platform-node on Bun 120,587, platform-node on Node.js 110,347, platform-fastify on Node.js 103,280, platform-fastify on Bun 102,153, platform-hono on Node.js 101,533, platform-express on Bun 93,484, platform-express on Node.js 74,187. Apple M4 · wrk -t4 -c100, 3 s warmup. platform-hono, platform-fastify, platform-express, platform-node: NestJS 12.3.2.</desc>
 <style>text{font:13px ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;fill:#8a8b96}
 .title{font-size:20px;font-weight:700;fill:#e6e6ea}
 .label,.value{font-size:14px;fill:#e6e6ea}
@@ -37,13 +37,13 @@
 <symbol id="node" viewBox="0 0 24 24"><path d="M11.998,24c-0.321,0-0.641-0.084-0.922-0.247l-2.936-1.737c-0.438-0.245-0.224-0.332-0.08-0.383 c0.585-0.203,0.703-0.25,1.328-0.604c0.065-0.037,0.151-0.023,0.218,0.017l2.256,1.339c0.082,0.045,0.197,0.045,0.272,0l8.795-5.076 c0.082-0.047,0.134-0.141,0.134-0.238V6.921c0-0.099-0.053-0.192-0.137-0.242l-8.791-5.072c-0.081-0.047-0.189-0.047-0.271,0 L3.075,6.68C2.99,6.729,2.936,6.825,2.936,6.921v10.15c0,0.097,0.054,0.189,0.139,0.235l2.409,1.392 c1.307,0.654,2.108-0.116,2.108-0.89V7.787c0-0.142,0.114-0.253,0.256-0.253h1.115c0.139,0,0.255,0.112,0.255,0.253v10.021 c0,1.745-0.95,2.745-2.604,2.745c-0.508,0-0.909,0-2.026-0.551L2.28,18.675c-0.57-0.329-0.922-0.945-0.922-1.604V6.921 c0-0.659,0.353-1.275,0.922-1.603l8.795-5.082c0.557-0.315,1.296-0.315,1.848,0l8.794,5.082c0.57,0.329,0.924,0.944,0.924,1.603 v10.15c0,0.659-0.354,1.273-0.924,1.604l-8.794,5.078C12.643,23.916,12.324,24,11.998,24z M19.099,13.993 c0-1.9-1.284-2.406-3.987-2.763c-2.731-0.361-3.009-0.548-3.009-1.187c0-0.528,0.235-1.233,2.258-1.233 c1.807,0,2.473,0.389,2.747,1.607c0.024,0.115,0.129,0.199,0.247,0.199h1.141c0.071,0,0.138-0.031,0.186-0.081 c0.048-0.054,0.074-0.123,0.067-0.196c-0.177-2.098-1.571-3.076-4.388-3.076c-2.508,0-4.004,1.058-4.004,2.833 c0,1.925,1.488,2.457,3.895,2.695c2.88,0.282,3.103,0.703,3.103,1.269c0,0.983-0.789,1.402-2.642,1.402 c-2.327,0-2.839-0.584-3.011-1.742c-0.02-0.124-0.126-0.215-0.253-0.215h-1.137c-0.141,0-0.254,0.112-0.254,0.253 c0,1.482,0.806,3.248,4.655,3.248C17.501,17.007,19.099,15.91,19.099,13.993z"/></symbol>
 <filter id="glow" x="-100%" y="-100%" width="300%" height="300%"><feGaussianBlur stdDeviation="5"/><feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge></filter>
 </defs>
-<rect class="panel" x="0.5" y="0.5" width="879" height="589" rx="16"/>
+<rect class="panel" x="0.5" y="0.5" width="879" height="553" rx="16"/>
 <text class="title" x="28" y="50">NestJS, GET / requests per second</text>
 <circle class="dot" cx="32" cy="71" r="4"/>
 <text x="44" y="75">one request: client → server → client · a faster ball serves more requests per second</text>
 <text class="head" x="574" y="104">CLIENT</text>
 <text class="head end" x="848" y="104">SERVER</text>
-<g class="row hl" style="--trip:0.856s">
+<g class="row hl" style="--trip:0.849s">
 <use class="logo" href="#nest" x="28" y="118" width="32" height="32"/>
 <g class="badge bun">
 <rect x="70" y="123" width="84" height="22" rx="11"/>
@@ -52,13 +52,13 @@
 </g>
 <rect class="name" x="164" y="116" width="384" height="36" rx="9"/>
 <text class="label" x="178" y="139">nest <tspan class="adapter">platform-hono</tspan></text>
-<text class="value" x="534" y="139">140,247<tspan class="unit"> req/s</tspan></text>
+<text class="value" x="534" y="139">141,294<tspan class="unit"> req/s</tspan></text>
 <rect class="track" x="560" y="119" width="292" height="30" rx="15"/>
 <path class="wall" d="M842 125V143"/>
 <text class="ok" x="843" y="117">200</text>
 <circle class="ball platform-hono" cx="576" cy="134" r="10"/>
 </g>
-<g class="row" style="--trip:0.991s">
+<g class="row" style="--trip:0.995s">
 <use class="logo" href="#nest" x="28" y="164" width="32" height="32"/>
 <g class="badge bun">
 <rect x="70" y="169" width="84" height="22" rx="11"/>
@@ -66,14 +66,14 @@
 <text x="110.7" y="184">Bun</text>
 </g>
 <rect class="name" x="164" y="162" width="384" height="36" rx="9"/>
-<text class="label" x="178" y="185">nest <tspan class="adapter">platform-node (unreleased)</tspan></text>
-<text class="value" x="534" y="185">121,062<tspan class="unit"> req/s</tspan></text>
+<text class="label" x="178" y="185">nest <tspan class="adapter">platform-node</tspan></text>
+<text class="value" x="534" y="185">120,587<tspan class="unit"> req/s</tspan></text>
 <rect class="track" x="560" y="165" width="292" height="30" rx="15"/>
 <path class="wall" d="M842 171V189"/>
 <text class="ok" x="843" y="163">200</text>
 <circle class="ball platform-node" cx="576" cy="180" r="10"/>
 </g>
-<g class="row" style="--trip:1.091s">
+<g class="row" style="--trip:1.087s">
 <use class="logo" href="#nest" x="28" y="210" width="32" height="32"/>
 <g class="badge node">
 <rect x="70" y="215" width="84" height="22" rx="11"/>
@@ -81,44 +81,44 @@
 <text x="96.3" y="230">Node.js</text>
 </g>
 <rect class="name" x="164" y="208" width="384" height="36" rx="9"/>
-<text class="label" x="178" y="231">nest <tspan class="adapter">platform-node (unreleased)</tspan></text>
-<text class="value" x="534" y="231">109,965<tspan class="unit"> req/s</tspan></text>
+<text class="label" x="178" y="231">nest <tspan class="adapter">platform-node</tspan></text>
+<text class="value" x="534" y="231">110,347<tspan class="unit"> req/s</tspan></text>
 <rect class="track" x="560" y="211" width="292" height="30" rx="15"/>
 <path class="wall" d="M842 217V235"/>
 <text class="ok" x="843" y="209">200</text>
 <circle class="ball platform-node" cx="576" cy="226" r="10"/>
 </g>
-<g class="row" style="--trip:1.142s">
+<g class="row" style="--trip:1.162s">
 <use class="logo" href="#nest" x="28" y="256" width="32" height="32"/>
-<g class="badge bun">
+<g class="badge node">
 <rect x="70" y="261" width="84" height="22" rx="11"/>
-<use href="#bun" x="91.7" y="265" width="14" height="14"/>
-<text x="110.7" y="276">Bun</text>
+<use href="#node" x="77.3" y="265" width="14" height="14"/>
+<text x="96.3" y="276">Node.js</text>
 </g>
 <rect class="name" x="164" y="254" width="384" height="36" rx="9"/>
 <text class="label" x="178" y="277">nest <tspan class="adapter">platform-fastify</tspan></text>
-<text class="value" x="534" y="277">105,053<tspan class="unit"> req/s</tspan></text>
+<text class="value" x="534" y="277">103,280<tspan class="unit"> req/s</tspan></text>
 <rect class="track" x="560" y="257" width="292" height="30" rx="15"/>
 <path class="wall" d="M842 263V281"/>
 <text class="ok" x="843" y="255">200</text>
 <circle class="ball platform-fastify" cx="576" cy="272" r="10"/>
 </g>
-<g class="row" style="--trip:1.158s">
+<g class="row" style="--trip:1.175s">
 <use class="logo" href="#nest" x="28" y="302" width="32" height="32"/>
-<g class="badge node">
+<g class="badge bun">
 <rect x="70" y="307" width="84" height="22" rx="11"/>
-<use href="#node" x="77.3" y="311" width="14" height="14"/>
-<text x="96.3" y="322">Node.js</text>
+<use href="#bun" x="91.7" y="311" width="14" height="14"/>
+<text x="110.7" y="322">Bun</text>
 </g>
 <rect class="name" x="164" y="300" width="384" height="36" rx="9"/>
 <text class="label" x="178" y="323">nest <tspan class="adapter">platform-fastify</tspan></text>
-<text class="value" x="534" y="323">103,645<tspan class="unit"> req/s</tspan></text>
+<text class="value" x="534" y="323">102,153<tspan class="unit"> req/s</tspan></text>
 <rect class="track" x="560" y="303" width="292" height="30" rx="15"/>
 <path class="wall" d="M842 309V327"/>
 <text class="ok" x="843" y="301">200</text>
 <circle class="ball platform-fastify" cx="576" cy="318" r="10"/>
 </g>
-<g class="row hl" style="--trip:1.195s">
+<g class="row hl" style="--trip:1.182s">
 <use class="logo" href="#nest" x="28" y="348" width="32" height="32"/>
 <g class="badge node">
 <rect x="70" y="353" width="84" height="22" rx="11"/>
@@ -127,13 +127,13 @@
 </g>
 <rect class="name" x="164" y="346" width="384" height="36" rx="9"/>
 <text class="label" x="178" y="369">nest <tspan class="adapter">platform-hono</tspan></text>
-<text class="value" x="534" y="369">100,424<tspan class="unit"> req/s</tspan></text>
+<text class="value" x="534" y="369">101,533<tspan class="unit"> req/s</tspan></text>
 <rect class="track" x="560" y="349" width="292" height="30" rx="15"/>
 <path class="wall" d="M842 355V373"/>
 <text class="ok" x="843" y="347">200</text>
 <circle class="ball platform-hono" cx="576" cy="364" r="10"/>
 </g>
-<g class="row" style="--trip:1.359s">
+<g class="row" style="--trip:1.284s">
 <use class="logo" href="#nest" x="28" y="394" width="32" height="32"/>
 <g class="badge bun">
 <rect x="70" y="399" width="84" height="22" rx="11"/>
@@ -142,13 +142,13 @@
 </g>
 <rect class="name" x="164" y="392" width="384" height="36" rx="9"/>
 <text class="label" x="178" y="415">nest <tspan class="adapter">platform-express</tspan></text>
-<text class="value" x="534" y="415">88,305<tspan class="unit"> req/s</tspan></text>
+<text class="value" x="534" y="415">93,484<tspan class="unit"> req/s</tspan></text>
 <rect class="track" x="560" y="395" width="292" height="30" rx="15"/>
 <path class="wall" d="M842 401V419"/>
 <text class="ok" x="843" y="393">200</text>
 <circle class="ball platform-express" cx="576" cy="410" r="10"/>
 </g>
-<g class="row" style="--trip:1.777s">
+<g class="row" style="--trip:1.618s">
 <use class="logo" href="#nest" x="28" y="440" width="32" height="32"/>
 <g class="badge node">
 <rect x="70" y="445" width="84" height="22" rx="11"/>
@@ -157,14 +157,12 @@
 </g>
 <rect class="name" x="164" y="438" width="384" height="36" rx="9"/>
 <text class="label" x="178" y="461">nest <tspan class="adapter">platform-express</tspan></text>
-<text class="value" x="534" y="461">67,547<tspan class="unit"> req/s</tspan></text>
+<text class="value" x="534" y="461">74,187<tspan class="unit"> req/s</tspan></text>
 <rect class="track" x="560" y="441" width="292" height="30" rx="15"/>
 <path class="wall" d="M842 447V465"/>
 <text class="ok" x="843" y="439">200</text>
 <circle class="ball platform-express" cx="576" cy="456" r="10"/>
 </g>
 <text class="note" x="28" y="510">Apple M4 · wrk -t4 -c100, 3 s warmup</text>
-<text class="note" x="28" y="528">platform-hono: NestJS 12.1.3</text>
-<text class="note" x="28" y="546">platform-fastify, platform-express: NestJS 12.1.2 from nestjs/nest#18063</text>
-<text class="note" x="28" y="564">platform-node (unreleased): NestJS 12.1.2 from nestjs/nest#18063, Bun and Node.js</text>
+<text class="note" x="28" y="528">platform-hono, platform-fastify, platform-express, platform-node: NestJS 12.3.2</text>
 </svg>
